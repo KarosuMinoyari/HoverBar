@@ -57,7 +57,7 @@ Optional unter Zahnrad → Vorgeschlagen → *Musik-Sync*. Legt deine Songs, Cov
 ```json
 {
   "format": "HoverBar-Bibliothek", "version": 1, "updated": "2026-11-25T12:30:00",
-  "songs": [ {"id":"…","file":"Name.mp3","title":"…","artist":"…","duration":156,"cover":"Cover/….jpg","url":"https://…"} ],
+  "songs": [ {"id":"…","file":"Name.mp3","title":"…","artist":"…","duration":156,"cover":"Cover/….jpg","lyrics":"Name.lrc","url":"https://…"} ],
   "playlists": [ {"name":"…","songs":["id", …]} ],
   "favorites": ["id", …]
 }

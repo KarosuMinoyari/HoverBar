@@ -68,6 +68,16 @@ void Music_SetFolder(const std::wstring& folder) {
     g_songFolder = folder;
     ReleaseSRWLockExclusive(&g_folderLock);
 }
+// Songtext-Datei (.lrc) neben der MP3 mitnehmen, wenn die MP3 umzieht
+static void MoveLyricsAlong(const std::wstring& oldMp3, const std::wstring& newMp3) {
+    auto lrc = [](const std::wstring& p) {
+        size_t d = p.find_last_of(L'.');
+        return (d == std::wstring::npos ? p : p.substr(0, d)) + L".lrc";
+    };
+    std::wstring o = lrc(oldMp3), n = lrc(newMp3);
+    if (GetFileAttributesW(o.c_str()) != INVALID_FILE_ATTRIBUTES && GetFileAttributesW(n.c_str()) == INVALID_FILE_ATTRIBUTES)
+        MoveFileExW(o.c_str(), n.c_str(), MOVEFILE_COPY_ALLOWED);
+}
 // vorhandene Songs in den Song-Ordner verschieben; liefert die Anzahl verschobener Dateien
 int Music_MoveSongsToFolder() {
     std::wstring dir = Music_Folder();
@@ -80,6 +90,7 @@ int Music_MoveSongsToFolder() {
         for (int n = 2; GetFileAttributesW(dst.c_str()) != INVALID_FILE_ATTRIBUTES; n++)
             dst = dir + L"\\" + name.substr(0, name.size() - 4) + L" (" + std::to_wstring(n) + L").mp3";
         if (MoveFileExW(s.file.c_str(), dst.c_str(), MOVEFILE_COPY_ALLOWED)) {  // auch auf andere Laufwerke
+            MoveLyricsAlong(s.file, dst);
             s.file = dst;
             moved++;
         }
@@ -1794,10 +1805,16 @@ bool Music_ExportLibrary() {
             }
             if (GetFileAttributesW(dst.c_str()) != INVALID_FILE_ATTRIBUTES) cover = L"Cover/" + cn;
         }
+        std::wstring lyrics;  // Songtext (.lrc) neben der MP3, falls vorhanden
+        {
+            size_t d = s.file.find_last_of(L'.');
+            std::wstring lf = (d == std::wstring::npos ? s.file : s.file.substr(0, d)) + L".lrc";
+            if (GetFileAttributesW(lf.c_str()) != INVALID_FILE_ATTRIBUTES) lyrics = BaseNameOf(lf);
+        }
         if (!songs.empty()) songs += ",\n";
         songs += "    {\"id\":\"" + JsonEsc(s.id) + "\",\"file\":\"" + JsonEsc(BaseNameOf(s.file)) + "\",\"title\":\"" + JsonEsc(s.title) +
                  "\",\"artist\":\"" + JsonEsc(s.artist) + "\",\"duration\":" + std::to_string(s.duration) + ",\"cover\":\"" + JsonEsc(cover) +
-                 "\",\"url\":\"" + JsonEsc(s.url) + "\"}";
+                 "\",\"lyrics\":\"" + JsonEsc(lyrics) + "\",\"url\":\"" + JsonEsc(s.url) + "\"}";
         listed.push_back(s.id);
     }
     auto isListed = [&](const std::wstring& id) { return std::find(listed.begin(), listed.end(), id) != listed.end(); };
@@ -1870,7 +1887,7 @@ static DWORD WINAPI SyncThread(LPVOID p) {
             std::wstring name = BaseNameOf(file), dst = prm->dir + L"\\" + name;
             for (int n = 2; GetFileAttributesW(dst.c_str()) != INVALID_FILE_ATTRIBUTES; n++)
                 dst = prm->dir + L"\\" + name.substr(0, name.size() - 4) + L" (" + std::to_wstring(n) + L").mp3";
-            if (MoveFileExW(file.c_str(), dst.c_str(), MOVEFILE_COPY_ALLOWED)) res->moved.push_back({s.first, dst});
+            if (MoveFileExW(file.c_str(), dst.c_str(), MOVEFILE_COPY_ALLOWED)) { MoveLyricsAlong(file, dst); res->moved.push_back({s.first, dst}); }
             else res->failed++;
         }
         SetSyncStatus(1, ++done, total, L"Verschiebe Songs …");

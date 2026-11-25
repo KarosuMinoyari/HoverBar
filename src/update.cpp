@@ -79,7 +79,7 @@ static std::string JsonStr(const std::string& j, const std::string& key, size_t 
 
 // Release-Angaben holen: Version, Download-Adresse der HoverBar.exe, Prüfsumme
 static bool QueryLatest(std::wstring& err) {
-    std::wstring api = Widen(std::string("https://api.github.com/repos/") + HB_REPO + "/releases/latest") + Stamp();
+    std::wstring api = Widen(std::string("https://api.github.com/repos/") + HB_REPO + "/releases?per_page=20&t=") + std::to_wstring(GetTickCount64());
     std::wstring tmp = TempFile(L"hoverbar_release.json");
     DeleteFileW(tmp.c_str());
     if (FAILED(URLDownloadToFileW(nullptr, api.c_str(), tmp.c_str(), 0, nullptr))) {
@@ -90,14 +90,28 @@ static bool QueryLatest(std::wstring& err) {
     bool ok = ReadFileText(tmp, j);
     DeleteFileW(tmp.c_str());
     if (!ok || j.empty()) { err = L"Antwort von GitHub nicht lesbar."; return false; }
-    std::string tag = JsonStr(j, "tag_name", 0);
+    // Im Repo liegen auch Releases anderer Apps (z. B. HoverMusic, Tag "hovermusic-v…"): das neueste Release mit Tag "v<Zahl>…"
+    // und einer HoverBar.exe nehmen (Entwürfe und Vorabversionen überspringen). Pro Release steht der Tag vor seinen Dateien.
+    std::string seg, tag;
+    size_t pos = 0;
+    const std::string key = "\"tag_name\":\"";
+    while ((pos = j.find(key, pos)) != std::string::npos) {
+        size_t next = j.find(key, pos + key.size());
+        seg = j.substr(pos, next == std::string::npos ? std::string::npos : next - pos);
+        pos = next == std::string::npos ? j.size() : next;
+        std::string t = JsonStr(seg, "tag_name", 0);
+        if (t.size() < 2 || t[0] != 'v' || !isdigit((unsigned char)t[1])) continue;
+        if (seg.find("\"draft\":true") != std::string::npos || seg.find("\"prerelease\":true") != std::string::npos) continue;
+        if (seg.find("\"name\":\"HoverBar.exe\"") == std::string::npos) continue;
+        tag = t;
+        break;
+    }
     if (tag.empty()) { err = L"Keine veröffentlichte Version gefunden."; return false; }
-    size_t p = j.find("\"name\":\"HoverBar.exe\"");
-    if (p == std::string::npos) { err = L"Die Version enthält keine HoverBar.exe."; return false; }
-    std::string url = JsonStr(j, "browser_download_url", p);
-    std::string digest = JsonStr(j, "digest", p);
-    size_t q = j.find("\"name\":\"HoverBar.exe.sha256\"");
-    std::string hurl = q == std::string::npos ? "" : JsonStr(j, "browser_download_url", q);
+    size_t p = seg.find("\"name\":\"HoverBar.exe\"");
+    std::string url = JsonStr(seg, "browser_download_url", p);
+    std::string digest = JsonStr(seg, "digest", p);
+    size_t q = seg.find("\"name\":\"HoverBar.exe.sha256\"");
+    std::string hurl = q == std::string::npos ? "" : JsonStr(seg, "browser_download_url", q);
     // nur Downloads von GitHub selbst
     if (url.rfind("https://github.com/", 0) != 0) { err = L"Unerwartete Download-Adresse."; return false; }
     std::string hash;
