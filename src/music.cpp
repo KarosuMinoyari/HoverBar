@@ -3,6 +3,8 @@
 #include "music.h"
 #include <unknwn.h>
 #include <shlobj.h>
+#include <propsys.h>
+#include <propkey.h>
 #include <shlwapi.h>
 #include <urlmon.h>
 #include <wincodec.h>
@@ -97,7 +99,7 @@ int Music_MoveSongsToFolder() {
         std::wstring dst = dir + L"\\" + name;
         if (_wcsicmp(dst.c_str(), s.file.c_str()) == 0 || GetFileAttributesW(s.file.c_str()) == INVALID_FILE_ATTRIBUTES) continue;
         for (int n = 2; GetFileAttributesW(dst.c_str()) != INVALID_FILE_ATTRIBUTES; n++)
-            dst = dir + L"\\" + name.substr(0, name.size() - 4) + L" (" + std::to_wstring(n) + L").mp3";
+            dst = dir + L"\\" + name.substr(0, name.size() - 4) + L" (" + std::to_wstring(n) + L")" + PathFindExtensionW(name.c_str());
         if (MoveFileExW(s.file.c_str(), dst.c_str(), MOVEFILE_COPY_ALLOWED)) {  // auch auf andere Laufwerke
             MoveLyricsAlong(s.file, dst);
             s.file = dst;
@@ -271,7 +273,10 @@ static bool SaveSquareJpg(const std::wstring& src, const std::wstring& dst, int 
 }
 
 // ID3v2.3-Tag (Titel, Künstler, Cover) vorn in die MP3 schreiben, damit auch andere Player alles sehen
+static bool IsMp3(const std::wstring& f) { return _wcsicmp(PathFindExtensionW(f.c_str()), L".mp3") == 0; }
+
 static void WriteId3(const Song& s) {
+    if (!IsMp3(s.file)) return;  // ein ID3-Tag würde z. B. eine m4a zerstören
     HANDLE h = CreateFileW(s.file.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
     if (h == INVALID_HANDLE_VALUE) return;
     LARGE_INTEGER sz;
@@ -393,7 +398,7 @@ static double ParseMp3(const std::vector<BYTE>& d, size_t& audio, std::vector<st
 double Music_Length(const std::wstring& id) {
     int i = Music_Find(id);
     std::vector<BYTE> d;
-    if (i < 0 || !ReadAll(g_songs[i].file, d)) return 0;
+    if (i < 0 || !IsMp3(g_songs[i].file) || !ReadAll(g_songs[i].file, d)) return 0;
     size_t audio;
     std::vector<std::pair<size_t, size_t>> fr;
     double spf = ParseMp3(d, audio, fr);  // erst parsen, dann zählen
@@ -511,7 +516,7 @@ bool Music_Undo(const std::wstring& id) {
 bool Music_Trim(const std::wstring& id, double from, double to, bool keepInside) {
     int i = Music_Find(id);
     std::vector<BYTE> d;
-    if (i < 0 || !ReadAll(g_songs[i].file, d)) return false;
+    if (i < 0 || !IsMp3(g_songs[i].file) || !ReadAll(g_songs[i].file, d)) return false;
     size_t audio;
     std::vector<std::pair<size_t, size_t>> fr;
     double spf = ParseMp3(d, audio, fr);
@@ -1873,6 +1878,61 @@ bool Music_ExportLibrary() {
 }
 std::wstring Music_SyncInfo() { return g_syncInfo; }
 
+static int ShellDuration(const std::wstring& file) {  // Sekunden, wie der Explorer sie anzeigt
+    IPropertyStore* ps = nullptr;
+    if (FAILED(SHGetPropertyStoreFromParsingName(file.c_str(), nullptr, GPS_DEFAULT, IID_PPV_ARGS(&ps)))) return 0;
+    PROPVARIANT v;
+    PropVariantInit(&v);
+    int sec = 0;
+    if (SUCCEEDED(ps->GetValue(PKEY_Media_Duration, &v)) && v.vt == VT_UI8) sec = (int)(v.uhVal.QuadPart / 10000000);
+    PropVariantClear(&v);
+    ps->Release();
+    return sec;
+}
+
+// Vom Handy kommen "<Künstler> - <Titel> [yt <id>].m4a" (Cover gleich benannt in Cover\\); andere Dateien werden genauso aufgenommen.
+int Music_ImportFolder() {
+    std::wstring dir = Music_Folder();
+    int added = 0;
+    for (const wchar_t* pattern : {L"*.mp3", L"*.m4a"}) {
+        WIN32_FIND_DATAW fd;
+        HANDLE h = FindFirstFileW((dir + L"\\" + pattern).c_str(), &fd);
+        if (h == INVALID_HANDLE_VALUE) continue;
+        do {
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY || (!fd.nFileSizeLow && !fd.nFileSizeHigh)) continue;
+            std::wstring file = dir + L"\\" + fd.cFileName, base = fd.cFileName;
+            if (std::any_of(g_songs.begin(), g_songs.end(), [&](const Song& s) { return _wcsicmp(s.file.c_str(), file.c_str()) == 0; })) continue;
+            base.erase(base.find_last_of(L'.'));
+            Song s;
+            s.id = NewId();
+            s.file = file;
+            std::wstring name = base;
+            size_t yt = name.rfind(L" [yt ");
+            bool phone = yt != std::wstring::npos && name.back() == L']';
+            if (phone) {
+                s.url = L"https://youtu.be/" + name.substr(yt + 5, name.size() - yt - 6);
+                name.erase(yt);
+            }
+            size_t dash = name.find(L" - ");
+            if (dash != std::wstring::npos) { s.artist = name.substr(0, dash); s.title = name.substr(dash + 3); }
+            else s.title = name;
+            s.duration = ShellDuration(file);
+            for (const wchar_t* ext : {L".jpg", L".webp", L".png"}) {
+                std::wstring cover = dir + L"\\Cover\\" + base + ext, dst = CoverDir() + L"\\" + s.id + L".jpg";
+                if (GetFileAttributesW(cover.c_str()) == INVALID_FILE_ATTRIBUTES || !SaveSquareJpg(cover, dst, 600)) continue;
+                s.cover = dst;
+                if (phone) DeleteFileW(cover.c_str());  // der Export legt seine eigene Kopie an
+                break;
+            }
+            g_songs.push_back(s);
+            added++;
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+    if (added) Music_Save();
+    return added;
+}
+
 // Zeilen: Song-ID <Tab> Titel <Tab> Künstler <Tab> Cover ("Cover/Name" oder leer) [<Tab> Schnitte, siehe unten]. Die Datei kommt aus der Cloud, also prüfen.
 bool Music_ImportEdits() {
     if (!g_syncExport) return false;
@@ -1970,7 +2030,7 @@ static DWORD WINAPI SyncThread(LPVOID p) {
         if (!DirectlyIn(file, prm->dir) && GetFileAttributesW(file.c_str()) != INVALID_FILE_ATTRIBUTES) {
             std::wstring name = BaseNameOf(file), dst = prm->dir + L"\\" + name;
             for (int n = 2; GetFileAttributesW(dst.c_str()) != INVALID_FILE_ATTRIBUTES; n++)
-                dst = prm->dir + L"\\" + name.substr(0, name.size() - 4) + L" (" + std::to_wstring(n) + L").mp3";
+                dst = prm->dir + L"\\" + name.substr(0, name.size() - 4) + L" (" + std::to_wstring(n) + L")" + PathFindExtensionW(name.c_str());
             if (MoveFileExW(file.c_str(), dst.c_str(), MOVEFILE_COPY_ALLOWED)) { MoveLyricsAlong(file, dst); res->moved.push_back({s.first, dst}); }
             else res->failed++;
         }

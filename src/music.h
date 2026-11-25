@@ -26,6 +26,7 @@ void Music_SetSyncExport(bool on);                         // Bibliotheksdatei b
 bool Music_SyncExportOn();
 void Music_SetFavorites(const std::vector<std::wstring>& ids);
 bool Music_ExportLibrary();                                // schreibt HoverBar-Bibliothek.json in den Song-Ordner und kopiert fehlende Cover in dessen Unterordner Cover
+int Music_ImportFolder();                                  // neue .mp3/.m4a im Song-Ordner aufnehmen (z. B. vom Handy); Anzahl
 bool Music_ImportEdits();                                  // Änderungen vom Handy (HoverMusic-Aenderungen.txt) übernehmen; true, wenn etwas geändert wurde
 std::wstring Music_SyncInfo();                             // "27 Songs · Bibliothek 12:30"
 void Music_SyncSetup(HWND notify, const std::wstring& dir);  // Songs im Hintergrund in den Ordner verschieben (Ergebnis als MUSIC_SYNC)

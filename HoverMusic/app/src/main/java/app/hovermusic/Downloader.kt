@@ -22,7 +22,7 @@ data class SongInfo(val id: String, val title: String, val artist: String, val d
 /**
  * yt-dlp auf dem Handy: holt die Tonspur (m4a, ohne Umwandeln) in den App-Ordner "music".
  * shortcut: läuft ohne Vordergrunddienst; falls Android lange Downloads abbricht, WorkManager nehmen.
- * shortcut: die Songs bleiben auf dem Handy (nicht in der Cloud) und werden mit der App deinstalliert.
+ * Die App legt zusätzlich eine Kopie in den Cloud-Ordner (siehe Upload).
  */
 object Downloader {
     /** Meldung für die Anzeige, null = nichts zu melden. */

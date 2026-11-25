@@ -232,7 +232,7 @@ enum class HT {
     // Musik
     MusicJob, MusicEmpty, MCard, MTile, MMore, MPlayAll, MRow, PlHead, PlUp, PlDown, PlDelete, PlDrop, PlSongRow,
     AllSongRow, AllSongAdd, AllSongEdit, MusicOpen, MProgress, EditCover, EditBtn, EditInfo, CoverPick, EditLabel, EditField,
-    MAlbum, VolIcon, MusicManage, MSize, MSort, GrabKeyBtn
+    MAlbum, VolIcon, MusicManage, MSize, MSort, GrabKeyBtn, MReload
 };
 struct Hit {
     RECT rc;
@@ -1905,10 +1905,18 @@ static void LayoutMusic(int W, int pad, int y0) {
         int rowH = S(songH[g.musicSize]);
         int list = g.libTab == 1 ? -2 : g.libTab == 3 ? -3 : -1;
         const auto& items = MusicListItems(list);
+        if (list == -1 && items.empty()) {  // leere Bibliothek: trotzdem neu einlesen können
+            g.hits.push_back({{pad + cw - S(44), y, pad + cw, y + S(44)}, HT::MReload, 0});
+            y += S(54);
+        }
         if (!items.empty()) {
             int sortW = list == -1 ? S(156) : 0;  // Sortierung nur bei "Alle Songs"
-            g.hits.push_back({{pad, y, pad + cw - sortW - (sortW ? S(8) : 0), y + S(44)}, HT::MPlayAll, list});
-            if (sortW) g.hits.push_back({{pad + cw - sortW, y, pad + cw, y + S(44)}, HT::MSort, 0});
+            int reloadW = sortW ? S(52) : 0;  // Knopf zum Neueinlesen ganz rechts
+            g.hits.push_back({{pad, y, pad + cw - sortW - reloadW - (sortW ? S(8) : 0), y + S(44)}, HT::MPlayAll, list});
+            if (sortW) {
+                g.hits.push_back({{pad + cw - sortW - reloadW, y, pad + cw - reloadW, y + S(44)}, HT::MSort, 0});
+                g.hits.push_back({{pad + cw - S(44), y, pad + cw, y + S(44)}, HT::MReload, 0});
+            }
             y += S(54);
         } else if (!Music_Songs().empty()) {
             g.hits.push_back({{pad, y, pad + cw, y + S(40)}, HT::EditInfo, g.libTab == 1 ? 11 : 12});
@@ -3523,6 +3531,10 @@ static void DrawHit(HDC dc, const Hit& h, bool hot, int cardHot) {
         Text(dc, L"alle anzeigen", {h.rc.left + S(4), iy + isz + S(5), h.rc.right - S(4), h.rc.bottom - S(3)}, g.fSmall, cDim, DT_CENTER | DT_SINGLELINE);
         break;
     }
+    case HT::MReload:
+        FillRound(dc, h.rc, S(22), hot ? cCardHot : cCard);
+        Text(dc, L"\uE72C", h.rc, g.fGlyph, cText, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        break;
     case HT::MSort:
         FillRound(dc, h.rc, S(22), hot ? cCardHot : cCard);
         Text(dc, g.sortPlays ? L"Meistgespielt" : L"Nach Titel", h.rc, g.fText, cText, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
@@ -7132,6 +7144,18 @@ static void Activate(int hitIdx, bool right) {
     case HT::MPlayAll:
         PlayList(h.idx, 0);
         break;
+    case HT::MReload: {  // Songs vom Handy (oder von Hand hineinkopierte) und Handy-Änderungen übernehmen
+        int added = Music_ImportFolder();
+        bool edited = Music_ImportEdits();
+        BuildMusic();
+        Refresh();
+        std::wstring msg = added ? std::to_wstring(added) + (added == 1 ? L" neuer Song" : L" neue Songs") : L"Keine neuen Songs";
+        if (edited) msg += L", Änderungen vom Handy übernommen";
+        g.menuOpen = true;
+        MessageBoxW(g.hwnd, (msg + L".").c_str(), L"HoverBar", MB_OK | MB_ICONINFORMATION | MB_TOPMOST);
+        g.menuOpen = false;
+        break;
+    }
     case HT::MSort:
         g.sortPlays = !g.sortPlays;
         IniSet(L"Musik", L"NachWiedergaben", g.sortPlays ? L"1" : L"0");

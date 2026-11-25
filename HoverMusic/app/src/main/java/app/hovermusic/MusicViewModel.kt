@@ -18,6 +18,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 /** Wie im HoverBar-Player: jeder Klick schaltet weiter. */
@@ -54,7 +56,7 @@ class MusicViewModel(app: Application) : AndroidViewModel(app) {
     init {
         prefs.jsonCache?.let { runCatching { cloud = LibraryLoader.parseCached(it) } }
         publish()
-        viewModelScope.launch { Downloader.finished.collect { publish() } }
+        viewModelScope.launch { Downloader.finished.collect { publish(); if (it > 0) refresh() } }  // refresh lädt den neuen Song in die Cloud
         Downloader.prepare(app)  // beim ersten Start gleich die neueste yt-dlp-Version holen
         connect()
         if (prefs.treeUri != null) refresh()
@@ -106,6 +108,7 @@ class MusicViewModel(app: Application) : AndroidViewModel(app) {
                 folderId = loaded.folderId
                 cloud = loaded.library
                 publish()
+                uploadDownloads(Uri.parse(tree), loaded)
                 if (!prefs.favoritesSeeded) {  // einmalig: Favoriten vom PC übernehmen
                     prefs.setFavorites((prefs.favorites() + loaded.library.pcFavorites).distinct())
                     favorites.value = prefs.favorites()
@@ -119,9 +122,26 @@ class MusicViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Neue Handy-Downloads in den Cloud-Ordner legen, damit der PC sie einlesen kann. */
+    private suspend fun uploadDownloads(tree: Uri, loaded: LibraryLoader.Loaded) {
+        val ctx = getApplication<Application>()
+        try {
+            withContext(Dispatchers.IO) {
+                uploadLock.withLock {
+                    for (s in Upload.pending(ctx, Downloader.localSongs(ctx), loaded.library)) Upload.upload(ctx, tree, loaded.folderId, s)
+                }
+            }
+        } catch (e: Exception) {
+            error.value = "Download nicht in die Cloud gelegt (${e.message}). Wähle den Musikordner in den Einstellungen neu, damit die App schreiben darf."
+        }
+    }
+
+    private val uploadLock = Mutex()
+
     private fun publish() {
-        val local = Downloader.localSongs(getApplication())
         val base = cloud
+        // was der PC schon eingelesen hat, nicht doppelt zeigen
+        val local = Downloader.localSongs(getApplication()).filter { s -> base?.songs?.none { Upload.marker(s.id) in it.file } != false }
         library.value = when {
             local.isEmpty() -> base
             base == null -> Library(local, emptyList(), emptyList(), "")
