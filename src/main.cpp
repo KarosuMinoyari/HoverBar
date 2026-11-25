@@ -6032,6 +6032,34 @@ static int SetSongFolder(const std::wstring& path, bool moveExisting) {
 }
 
 // ---------------------------------------------------------------- Musik-Sync: Cloud-Dienste erkennen, auswählen, einrichten
+// Bestätigung für Aktionen mit Folgen (Programm installieren, Songs verschieben/hochladen): Eine Antwort in unter 0,7 s kann niemand gelesen
+// haben (z. B. ein durchgeklickter Mausklick) und zählt als "Nein".
+static bool ConfirmCareful(const std::wstring& msg, const wchar_t* actionText) {
+    // eigener Dialog statt Ja/Nein: nur der Knopf mit dem Namen der Aktion stimmt zu, "Abbrechen" ist vorbelegt (Tastenkürzel wie J/N tun nichts)
+    TASKDIALOG_BUTTON btns[] = {{100, actionText}, {IDCANCEL, L"Abbrechen"}};
+    TASKDIALOGCONFIG c = {sizeof(c)};
+    c.hwndParent = g.hwnd;
+    c.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION;
+    c.pszWindowTitle = L"HoverBar";
+    c.pszMainInstruction = L"Bitte bestätigen";
+    c.pszContent = msg.c_str();
+    c.pszMainIcon = TD_INFORMATION_ICON;
+    c.cButtons = 2;
+    c.pButtons = btns;
+    c.nDefaultButton = IDCANCEL;
+    int btn = 0;
+    ULONGLONG t0 = GetTickCount64();
+    g.menuOpen = true;
+    HRESULT hr = TaskDialogIndirect(&c, &btn, nullptr, nullptr);
+    g.menuOpen = false;
+    SetForegroundWindow(g.hwnd);
+    if (FAILED(hr) || btn != 100) return false;
+    if (GetTickCount64() - t0 < 700) {  // schneller als lesbar: durchgeklickt
+        Log(L"Bestätigung zu schnell beantwortet – als Nein gewertet");
+        return false;
+    }
+    return true;
+}
 struct CloudProv {
     std::wstring name, quota, url, base;  // Anzeigename, gratis-Speicher, Download-Seite, Basisordner (leer = nicht installiert)
     bool reportsFree = false;             // zeigt das Laufwerk den freien Cloud-Speicher? (Google Drive, pCloud)
@@ -6179,6 +6207,7 @@ static void StartCloudInstall(const CloudProv& c) {
         std::lock_guard<std::mutex> l(sCloudMu);
         if (sCloudState == 1) return;
     }
+    Log(L"Cloud-Installation gestartet: " + c.wingetId);
     CloudSet(1, c.name + L" wird installiert … (Windows fragt eventuell nach Administratorrechten)");
     struct Job { HWND h; std::wstring name, id; };
     auto* j = new Job{g.hwnd, c.name, c.wingetId};
@@ -6339,9 +6368,9 @@ static void SyncSetupFlow() {
         auto& c = clouds[cmd - 1];
         if (c.base.empty()) {  // nicht installiert: per winget installieren (ein Klick), sonst Download-Seite öffnen
             if (!c.wingetId.empty() && WingetAvailable()) {
-                if (ConfirmBox(c.name + L" jetzt installieren?\n\nHoverBar nutzt dafür den Windows-Paketmanager winget (Paket \"" + c.wingetId +
+                if (ConfirmCareful(c.name + L" jetzt installieren?\n\nHoverBar nutzt dafür den Windows-Paketmanager winget (Paket \"" + c.wingetId +
                                L"\", vom Hersteller, mit Prüfsumme). Windows fragt eventuell nach Administratorrechten.\n\nDanach meldest du dich in " + c.name +
-                               L" an und klickst hier nochmal auf „Einrichten“."))
+                               L" an und klickst hier nochmal auf „Einrichten“.", L"Installieren"))
                     StartCloudInstall(c);
             } else {
                 ShellExecuteW(nullptr, L"open", c.url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
@@ -6383,9 +6412,9 @@ static void SyncSetupFlow() {
     } else {
         spaceLine = L"\nPrüfe, ob in deinem Cloud-Konto genug frei ist.";
     }
-    if (!ConfirmBox(L"Musik-Sync mit " + cloudName + L" einrichten?\n\n" + std::to_wstring(n) + L" Songs (" + FmtGB(need) + L") werden nach\n" + dir +
+    if (!ConfirmCareful(L"Musik-Sync mit " + cloudName + L" einrichten?\n\n" + std::to_wstring(n) + L" Songs (" + FmtGB(need) + L") werden nach\n" + dir +
                     L"\nverschoben und dort vom Cloud-Programm hochgeladen. Playlists, Favoriten und Cover kommen als HoverBar-Bibliothek.json dazu." + spaceLine +
-                    L"\n\nDie Songs liegen danach in deinem Cloud-Konto: nur privat nutzen, nicht teilen."))
+                    L"\n\nDie Songs liegen danach in deinem Cloud-Konto: nur privat nutzen, nicht teilen.", L"Einrichten"))
         return;
     if (SetSongFolder(dir, false) < 0) {
         g.syncNote = L"Ordner konnte nicht angelegt werden: " + dir;
