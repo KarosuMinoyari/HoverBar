@@ -30,6 +30,11 @@
 #include "chat.h"
 #include "update.h"
 #include "qrcode.h"
+#include <wincrypt.h>
+#include <softpub.h>
+#include <wintrust.h>
+#pragma comment(lib, "wintrust.lib")
+#pragma comment(lib, "crypt32.lib")
 #include <map>
 #include <thread>
 #include <mutex>
@@ -6066,6 +6071,9 @@ struct CloudProv {
     std::wstring wingetId;                // Paket im Windows-Paketmanager (leer = nur Download-Seite öffnen)
     std::wstring androidPkg;              // Paketname der Android-App (für die Handy-Einrichtung)
     std::wstring parentHint;              // Ordner zwischen Cloud-Wurzel und HoverBar-Musik (z. B. "Meine Ablage")
+    std::wstring directUrl;               // Installer direkt vom Hersteller (HTTPS), wenn winget fehlt oder es kein winget-Paket gibt
+    std::wstring signer;                  // so muss der Unterzeichner des Installers (Teil des Namens, klein) heißen
+    std::wstring silentArgs;              // Schalter für stille Installation (leer = normaler Ablauf)
 };
 
 // ---------------------------------------------------------------- Handy verbinden: QR-Code für die Einrichtung von HoverMusic
@@ -6196,6 +6204,25 @@ static void CloudSet(int st, const std::wstring& msg);
 static std::wstring sCloudName;       // Dienst, der gerade installiert wurde
 static std::wstring sCloudWait;       // Dienst, auf dessen Anmeldung gewartet wird (leer = nichts)
 static ULONGLONG sCloudWaitSince = 0;
+// Zeigt die Verknüpfung auf eine Datei, die es noch gibt? (Verknüpfungen auf Store-Apps ohne Dateipfad gelten als vorhanden)
+static bool LnkTargetExists(const std::wstring& lnk) {
+    IShellLinkW* sl = nullptr;
+    if (FAILED(CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&sl)))) return true;
+    bool ok = true;
+    IPersistFile* pf = nullptr;
+    if (SUCCEEDED(sl->QueryInterface(IID_PPV_ARGS(&pf)))) {
+        if (SUCCEEDED(pf->Load(lnk.c_str(), STGM_READ))) {
+            wchar_t raw[MAX_PATH * 2] = {}, path[MAX_PATH * 2] = {};
+            if (SUCCEEDED(sl->GetPath(raw, MAX_PATH * 2, nullptr, SLGP_RAWPATH)) && raw[0]) {
+                ExpandEnvironmentStringsW(raw, path, MAX_PATH * 2);
+                ok = GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES;
+            }
+        }
+        pf->Release();
+    }
+    sl->Release();
+    return ok;
+}
 // Verknüpfung des Programms im Startmenü suchen (Name enthält das Stichwort) und starten, damit man sich anmelden kann
 static bool LaunchCloudApp(const std::wstring& keyword, bool run = true, std::wstring* found = nullptr) {
     std::vector<std::wstring> roots;
@@ -6220,6 +6247,7 @@ static bool LaunchCloudApp(const std::wstring& keyword, bool run = true, std::ws
                 if (low.size() > 4 && low.compare(low.size() - 4, 4, L".lnk") == 0 && low.find(key) != std::wstring::npos &&
                     low.find(L"uninstall") == std::wstring::npos && low.find(L"deinstall") == std::wstring::npos) {
                     std::wstring lnk = dirs[d] + L"\\" + name;
+                    if (!LnkTargetExists(lnk)) continue;  // Programm wurde gelöscht, nur die Verknüpfung blieb übrig
                     FindClose(h);
                     if (found) *found = lnk;
                     if (run) ShellExecuteW(nullptr, L"open", lnk.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
@@ -6278,10 +6306,134 @@ static void CloudSet(int st, const std::wstring& msg) {
     sCloudState = st;
     sCloudMsg = msg;
 }
+// Digitale Signatur gültig und vom erwarteten Hersteller? (Name des Unterzeichners enthält signerLower)
+static bool SignedBy(const std::wstring& file, const std::wstring& signerLower, std::wstring& foundName) {
+    WINTRUST_FILE_INFO fi = {sizeof(fi)};
+    fi.pcwszFilePath = file.c_str();
+    WINTRUST_DATA wd = {sizeof(wd)};
+    wd.dwUIChoice = WTD_UI_NONE;
+    wd.fdwRevocationChecks = WTD_REVOKE_NONE;
+    wd.dwUnionChoice = WTD_CHOICE_FILE;
+    wd.pFile = &fi;
+    wd.dwStateAction = WTD_STATEACTION_VERIFY;
+    GUID action = WINTRUST_ACTION_GENERIC_VERIFY_V2;
+    LONG r = WinVerifyTrust(nullptr, &action, &wd);
+    bool ok = false;
+    if (r == ERROR_SUCCESS) {
+        CRYPT_PROVIDER_DATA* pd = WTHelperProvDataFromStateData(wd.hWVTStateData);
+        CRYPT_PROVIDER_SGNR* sg = pd ? WTHelperGetProvSignerFromChain(pd, 0, FALSE, 0) : nullptr;
+        CRYPT_PROVIDER_CERT* cert = sg ? WTHelperGetProvCertFromChain(sg, 0) : nullptr;
+        if (cert && cert->pCert) {
+            wchar_t name[256] = {};
+            CertGetNameStringW(cert->pCert, CERT_NAME_SIMPLE_DISPLAY_TYPE, 0, nullptr, name, 256);
+            foundName = name;
+            ok = Lower(foundName).find(signerLower) != std::wstring::npos;
+        }
+    }
+    wd.dwStateAction = WTD_STATEACTION_CLOSE;
+    WinVerifyTrust(nullptr, &action, &wd);
+    return ok;
+}
+struct CloudDlCb : IBindStatusCallback {
+    HWND h;
+    std::wstring name;
+    int last = -1;
+    CloudDlCb(HWND hh, const std::wstring& n) : h(hh), name(n) {}
+    STDMETHODIMP QueryInterface(REFIID r, void** o) override {
+        if (r == IID_IUnknown || r == IID_IBindStatusCallback) { *o = this; return S_OK; }
+        *o = nullptr;
+        return E_NOINTERFACE;
+    }
+    STDMETHODIMP_(ULONG) AddRef() override { return 2; }
+    STDMETHODIMP_(ULONG) Release() override { return 1; }
+    STDMETHODIMP OnStartBinding(DWORD, IBinding*) override { return S_OK; }
+    STDMETHODIMP GetPriority(LONG*) override { return E_NOTIMPL; }
+    STDMETHODIMP OnLowResource(DWORD) override { return S_OK; }
+    STDMETHODIMP OnProgress(ULONG now, ULONG total, ULONG, LPCWSTR) override {
+        if (total > 0) {
+            int pct = (int)((unsigned long long)now * 100 / total);
+            if (pct != last) {
+                last = pct;
+                CloudSet(1, name + L" wird geladen … " + std::to_wstring(pct) + L" %");
+                PostMessageW(h, WM_APP_CLOUD, 0, 0);
+            }
+        }
+        return S_OK;
+    }
+    STDMETHODIMP OnStopBinding(HRESULT, LPCWSTR) override { return S_OK; }
+    STDMETHODIMP GetBindInfo(DWORD*, BINDINFO*) override { return S_OK; }
+    STDMETHODIMP OnDataAvailable(DWORD, DWORD, FORMATETC*, STGMEDIUM*) override { return S_OK; }
+    STDMETHODIMP OnObjectAvailable(REFIID, IUnknown*) override { return S_OK; }
+};
+// Installer direkt vom Hersteller: HTTPS-Download, Signatur prüfen (gültig und vom richtigen Hersteller), dann (still) starten
+static void StartCloudDirectInstall(const CloudProv& c) {
+    Log(L"Cloud-Installation (direkt) gestartet: " + c.name);
+    sCloudName = c.name;
+    CloudSet(1, c.name + L" wird geladen …");
+    struct Job { HWND h; std::wstring name, url, signer, args; };
+    auto* j = new Job{g.hwnd, c.name, c.directUrl, c.signer, c.silentArgs};
+    HANDLE t = CreateThread(nullptr, 0, [](LPVOID p) -> DWORD {
+        auto* j = (Job*)p;
+        wchar_t tmp[MAX_PATH];
+        GetTempPathW(MAX_PATH, tmp);
+        std::wstring dir = std::wstring(tmp) + L"HoverBarCloud";
+        CreateDirectoryW(dir.c_str(), nullptr);
+        std::wstring file = dir + L"\\" + j->name + L"-Setup.exe";
+        DeleteFileW(file.c_str());
+        CloudDlCb cb(j->h, j->name);
+        do {
+            if (FAILED(URLDownloadToFileW(nullptr, j->url.c_str(), file.c_str(), 0, &cb))) {
+                CloudSet(3, j->name + L": Download fehlgeschlagen (Internetverbindung?).");
+                break;
+            }
+            CloudSet(1, j->name + L": prüfe die digitale Signatur …");
+            PostMessageW(j->h, WM_APP_CLOUD, 0, 0);
+            std::wstring found;
+            if (!SignedBy(file, j->signer, found)) {
+                DeleteFileW(file.c_str());
+                CloudSet(3, j->name + L": Die Signatur des Installers ist ungültig oder nicht vom Hersteller" + (found.empty() ? L"" : L" (Unterzeichner: " + found + L")") + L" – abgebrochen.");
+                break;
+            }
+            Log(L"Installer geprüft, Unterzeichner: " + found);
+            CloudSet(1, j->name + L" wird installiert … (Windows fragt eventuell nach Administratorrechten)");
+            PostMessageW(j->h, WM_APP_CLOUD, 0, 0);
+            SHELLEXECUTEINFOW sei = {sizeof(sei)};
+            sei.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC;
+            sei.lpVerb = L"open";
+            sei.lpFile = file.c_str();
+            sei.lpParameters = j->args.empty() ? nullptr : j->args.c_str();
+            sei.nShow = j->args.empty() ? SW_SHOWNORMAL : SW_HIDE;
+            if (!ShellExecuteExW(&sei) || !sei.hProcess) {
+                DeleteFileW(file.c_str());
+                CloudSet(3, j->name + L": Der Installer konnte nicht gestartet werden (Windows-Rückfrage abgelehnt?).");
+                break;
+            }
+            DWORD wait = WaitForSingleObject(sei.hProcess, 25 * 60 * 1000), code = 1;
+            GetExitCodeProcess(sei.hProcess, &code);
+            CloseHandle(sei.hProcess);
+            DeleteFileW(file.c_str());
+            wchar_t hex[16];
+            swprintf(hex, 16, L"0x%08X", code);
+            if (wait == WAIT_TIMEOUT) CloudSet(3, L"Die Installation dauert zu lange – abgebrochen.");
+            else if (code == 0) CloudSet(2, j->name + L" ist installiert.");
+            else CloudSet(3, j->name + L": Installation fehlgeschlagen (Code " + hex + L").");
+        } while (false);
+        PostMessageW(j->h, WM_APP_CLOUD, 0, 0);
+        delete j;
+        return 0;
+    }, j, 0, nullptr);
+    if (t) CloseHandle(t);
+    else { delete j; CloudSet(3, L"Konnte nicht starten."); }
+}
 static void StartCloudInstall(const CloudProv& c) {
     {
         std::lock_guard<std::mutex> l(sCloudMu);
         if (sCloudState == 1) return;
+    }
+    if (c.wingetId.empty() || !WingetAvailable()) {  // kein winget(-Paket): Installer direkt vom Hersteller laden
+        if (!c.directUrl.empty()) StartCloudDirectInstall(c);
+        else CloudSet(3, c.name + L": kein Installationsweg gefunden.");
+        return;
     }
     Log(L"Cloud-Installation gestartet: " + c.wingetId);
     sCloudName = c.name;
@@ -6385,6 +6537,13 @@ static std::vector<CloudProv> ListClouds() {
         if (!DirExists(c.base)) c.base.clear();
         v.push_back(c);
     }
+    for (auto& c : v) {  // Installer direkt vom Hersteller (Signatur wird vor dem Start geprüft)
+        if (c.name == L"Google Drive") { c.directUrl = L"https://dl.google.com/drive-file-stream/GoogleDriveSetup.exe"; c.signer = L"google"; c.silentArgs = L"--silent"; }
+        else if (c.name == L"OneDrive") { c.directUrl = L"https://go.microsoft.com/fwlink/?linkid=844652"; c.signer = L"microsoft"; c.silentArgs = L"/silent"; }
+        else if (c.name == L"Koofr") { c.directUrl = L"https://app.koofr.net/dl/apps/win"; c.signer = L"koofr"; c.silentArgs = L"/S"; }
+        else if (c.name == L"MEGA") { c.directUrl = L"https://mega.nz/MEGAsyncSetup64.exe"; c.signer = L"mega"; c.silentArgs = L"/S"; }
+        else if (c.name == L"Dropbox") { c.directUrl = L"https://www.dropbox.com/download?full=1&plat=win"; c.signer = L"dropbox"; }
+    }
     return v;
 }
 static std::wstring FmtGB(unsigned long long bytes) {
@@ -6409,7 +6568,7 @@ static void SyncSetupFlow() {
         } else if (LaunchCloudApp(CloudLaunchKeyword(c.name), false)) {  // installiert, aber noch kein Cloud-Ordner: Anmeldung fehlt
             label = c.name + L" ist installiert – öffnen und anmelden …";
         } else {
-            label = c.name + (!c.wingetId.empty() && WingetAvailable() ? L" installieren …  (" : L" herunterladen (Seite öffnen) …  (") + c.quota + L")";
+            label = c.name + ((!c.wingetId.empty() && WingetAvailable()) || !c.directUrl.empty() ? L" installieren …  (" : L" herunterladen (Seite öffnen) …  (") + c.quota + L")";
         }
         AppendMenuW(m, MF_STRING, i + 1, label.c_str());
     }
@@ -6452,10 +6611,12 @@ static void SyncSetupFlow() {
             return;
         }
         if (c.base.empty()) {  // nicht installiert: per winget installieren (ein Klick), sonst Download-Seite öffnen
-            if (!c.wingetId.empty() && WingetAvailable()) {
-                if (ConfirmCareful(c.name + L" jetzt installieren?\n\nHoverBar nutzt dafür den Windows-Paketmanager winget (Paket \"" + c.wingetId +
-                               L"\", vom Hersteller, mit Prüfsumme). Windows fragt eventuell nach Administratorrechten.\n\nDanach meldest du dich in " + c.name +
-                               L" an und klickst hier nochmal auf „Einrichten“.", L"Installieren"))
+            bool viaWinget = !c.wingetId.empty() && WingetAvailable();
+            if (viaWinget || !c.directUrl.empty()) {
+                std::wstring how = viaWinget ? L"HoverBar nutzt dafür den Windows-Paketmanager winget (Paket \"" + c.wingetId + L"\", vom Hersteller, mit Prüfsumme)."
+                                             : L"HoverBar lädt den Installer direkt vom Hersteller (HTTPS) und startet ihn erst, wenn seine digitale Signatur zu " + c.name + L" passt.";
+                if (ConfirmCareful(c.name + L" jetzt installieren?\n\n" + how + L" Windows fragt eventuell nach Administratorrechten.\n\nDanach meldest du dich in " + c.name +
+                               L" an – HoverBar macht dann automatisch mit dem Einrichten weiter.", L"Installieren"))
                     StartCloudInstall(c);
             } else {
                 ShellExecuteW(nullptr, L"open", c.url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
@@ -8732,6 +8893,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmd, int) {
         return 0;
     }
     if (cmd && wcsstr(cmd, L"--cloudtest ")) {  // Test: erkannte Cloud-Dienste und ihre Startmenü-Verknüpfung auflisten (startet nichts)
+        CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
         std::wstring outFile = wcsstr(cmd, L"--cloudtest ") + 12;
         outFile.erase(std::remove(outFile.begin(), outFile.end(), L'"'), outFile.end());
         FILE* fp = _wfopen(outFile.c_str(), L"wb");
@@ -8741,6 +8903,21 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmd, int) {
                 LaunchCloudApp(CloudLaunchKeyword(c.name), false, &lnk);
                 fprintf(fp, "%s | winget=%s | android=%s | Ordner=%s | Startmenue=%s\n", Utf8Of(c.name).c_str(), Utf8Of(c.wingetId).c_str(), Utf8Of(c.androidPkg).c_str(),
                         c.base.empty() ? "-" : Utf8Of(c.base).c_str(), lnk.empty() ? "-" : Utf8Of(lnk).c_str());
+            }
+            fclose(fp);
+        }
+        return 0;
+    }
+    if (cmd && wcsstr(cmd, L"--signtest ")) {  // Test: Signaturprüfung für Installer an einer Datei ausprobieren (schreibt <Datei>.txt, startet nichts)
+        std::wstring file = wcsstr(cmd, L"--signtest ") + 11;
+        file.erase(std::remove(file.begin(), file.end(), L'"'), file.end());
+        while (!file.empty() && file.back() == L' ') file.pop_back();
+        FILE* fp = _wfopen((file + L".txt").c_str(), L"wb");
+        if (fp) {
+            for (const wchar_t* who : {L"koofr", L"google", L"microsoft"}) {
+                std::wstring found;
+                bool ok = SignedBy(file, who, found);
+                fprintf(fp, "erwartet=%s -> %s (Unterzeichner: %s)\n", Utf8Of(who).c_str(), ok ? "AKZEPTIERT" : "ABGELEHNT", found.empty() ? "-" : Utf8Of(found).c_str());
             }
             fclose(fp);
         }
