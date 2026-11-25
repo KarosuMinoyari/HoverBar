@@ -66,7 +66,10 @@ static bool ClipText(std::wstring& out) {
     return ok;
 }
 static HWND sGrabFg = nullptr;
-// Adresse aus der Adressleiste des Browsers lesen (Bedienungshilfen/UI Automation, ohne Klicks)
+static int sGrabStage = 0, sGrabRetry = 0;  // 0 Auswahl kopieren, 1 Adressleiste lesen (mehrfach), 2 Notweg Strg+L, Strg+C
+static std::wstring AsLink(std::wstring t);
+// Adresse aus der Adressleiste des Browsers lesen (Bedienungshilfen/UI Automation, ohne Klicks).
+// Nimmt das erste Eingabefeld, dessen Inhalt wie ein Link aussieht (Chrome-Browser bauen ihre Oberfläche für solche Abfragen erst nach der ersten Anfrage auf).
 static std::wstring BrowserUrl(HWND fg) {
     std::wstring url;
     IUIAutomation* ua = nullptr;
@@ -78,20 +81,60 @@ static std::wstring BrowserUrl(HWND fg) {
         v.vt = VT_I4;
         v.lVal = UIA_EditControlTypeId;
         IUIAutomationCondition* c = nullptr;
-        IUIAutomationElement* e = nullptr;
+        IUIAutomationElementArray* arr = nullptr;
         if (SUCCEEDED(ua->CreatePropertyCondition(UIA_ControlTypePropertyId, v, &c)) && c &&
-            SUCCEEDED(root->FindFirst(TreeScope_Descendants, c, &e)) && e) {
-            VARIANT val;
-            VariantInit(&val);
-            if (SUCCEEDED(e->GetCurrentPropertyValue(UIA_ValueValuePropertyId, &val)) && val.vt == VT_BSTR && val.bstrVal) url = val.bstrVal;
-            VariantClear(&val);
-            e->Release();
+            SUCCEEDED(root->FindAll(TreeScope_Descendants, c, &arr)) && arr) {
+            int n = 0;
+            arr->get_Length(&n);
+            for (int i = 0; i < n && i < 12 && url.empty(); i++) {
+                IUIAutomationElement* e = nullptr;
+                if (FAILED(arr->GetElement(i, &e)) || !e) continue;
+                VARIANT val;
+                VariantInit(&val);
+                if (SUCCEEDED(e->GetCurrentPropertyValue(UIA_ValueValuePropertyId, &val)) && val.vt == VT_BSTR && val.bstrVal) {
+                    std::wstring s = val.bstrVal;
+                    if (!AsLink(s).empty()) url = s;
+                }
+                VariantClear(&val);
+                e->Release();
+            }
+            arr->Release();
         }
         if (c) c->Release();
         root->Release();
     }
     ua->Release();
     return url;
+}
+// ist das vordere Fenster ein Browser? (Notweg mit Strg+L nur dort, in anderen Programmen hätte die Taste andere Bedeutung)
+static bool IsBrowserWindow(HWND fg) {
+    DWORD pid = 0;
+    GetWindowThreadProcessId(fg, &pid);
+    HANDLE h = pid ? OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid) : nullptr;
+    if (!h) return false;
+    wchar_t p[MAX_PATH * 2];
+    DWORD n = MAX_PATH * 2;
+    bool ok = QueryFullProcessImageNameW(h, 0, p, &n) != 0;
+    CloseHandle(h);
+    if (!ok) return false;
+    std::wstring name = p;
+    name = name.substr(name.find_last_of(L'\\') + 1);
+    for (auto& ch : name) ch = towlower(ch);
+    for (const wchar_t* b : {L"chrome.exe", L"msedge.exe", L"brave.exe", L"opera.exe", L"opera_gx.exe", L"vivaldi.exe", L"firefox.exe", L"arc.exe",
+                             L"librewolf.exe", L"waterfox.exe", L"zen.exe", L"chromium.exe", L"iexplore.exe"})
+        if (name == b) return true;
+    return false;
+}
+static void SendKeys(std::initializer_list<std::pair<WORD, bool>> keys) {  // (Taste, losgelassen?)
+    std::vector<INPUT> in;
+    for (auto& k : keys) {
+        INPUT i = {};
+        i.type = INPUT_KEYBOARD;
+        i.ki.wVk = k.first;
+        if (k.second) i.ki.dwFlags = KEYEVENTF_KEYUP;
+        in.push_back(i);
+    }
+    SendInput((UINT)in.size(), in.data(), sizeof(INPUT));
 }
 // erstes Wort als Link deuten (ggf. https:// ergänzen); leer, wenn es keiner ist
 static std::wstring AsLink(std::wstring t) {
@@ -7003,19 +7046,39 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             Player_SetDuck(sDuck);
         } else if (wp == T_GRAB) {
             bool changed = GetClipboardSequenceNumber() != sClipSeq;
-            if (!changed && ++sGrabTicks < 8) return 0;  // kurz auf die Kopie warten (nichts markiert -> Adressleiste)
+            if (sGrabStage != 1 && !changed && ++sGrabTicks < (sGrabStage == 2 ? 12 : 8)) return 0;  // kurz auf die Kopie warten (nichts markiert -> Adressleiste)
             KillTimer(hwnd, T_GRAB);
-            sGrabTicks = 0;
             std::wstring t;
             bool got = changed && ClipText(t);
             if (changed) {  // Zwischenablage wiederherstellen
                 if (sClipHad) SetClipText(sClipOld);
                 else if (OpenClipboard(nullptr)) { EmptyClipboard(); CloseClipboard(); }
             }
+            sClipSeq = GetClipboardSequenceNumber();
             sClipOld.clear();
-            // markierter Link, sonst die Adresse der offenen Seite im Browser
+            // 0: markierter Link; 1: Adresse der offenen Seite (Adressleiste lesen); 2: Strg+L, Strg+C (Notweg)
             t = got ? AsLink(t) : L"";
-            if (t.empty()) t = AsLink(BrowserUrl(sGrabFg));
+            if (sGrabStage == 2) SendKeys({{VK_ESCAPE, false}, {VK_ESCAPE, true}});  // Adressleiste wieder verlassen
+            if (t.empty() && sGrabStage < 2) t = AsLink(BrowserUrl(sGrabFg));
+            if (t.empty() && sGrabStage < 2 && IsBrowserWindow(sGrabFg)) {
+                if (sGrabStage == 0) { sGrabStage = 1; sGrabRetry = 0; }
+                if (++sGrabRetry <= 3) {  // Chrome-Browser brauchen oft einen Moment, bis die Adressleiste lesbar ist
+                    Log(L"Alt+Ende: Adressleiste noch nicht lesbar, versuche es nochmal");
+                    SetTimer(hwnd, T_GRAB, 250, nullptr);
+                    return 0;
+                }
+                Log(L"Alt+Ende: Notweg Strg+L, Strg+C");
+                sGrabStage = 2;
+                sGrabTicks = 1;
+                sClipHad = ClipText(sClipOld);
+                sClipSeq = GetClipboardSequenceNumber();
+                SendKeys({{VK_CONTROL, false}, {'L', false}, {'L', true}, {'C', false}, {'C', true}, {VK_CONTROL, true}});
+                SetTimer(hwnd, T_GRAB, 60, nullptr);
+                return 0;
+            }
+            sGrabStage = 0;
+            sGrabRetry = 0;
+            sGrabTicks = 0;
             bool link = !t.empty();
             if (link && Music_ToolAvailable()) {
                 Music_Init(hwnd);
@@ -7221,6 +7284,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (wp == 5) {
             if (sGrabTicks > 0) return 0;
             sGrabFg = GetForegroundWindow();
+            sGrabStage = 0;
+            sGrabRetry = 0;
+            Log(IsBrowserWindow(sGrabFg) ? L"Alt+Ende gedrückt (Browser vorne)" : L"Alt+Ende gedrückt (kein bekannter Browser vorne)");
             // Auswahl im vorderen Programm kopieren: Strg drücken, Alt loslassen (kein Menü), C, Strg los
             sClipHad = ClipText(sClipOld);
             sClipSeq = GetClipboardSequenceNumber();
