@@ -1,4 +1,4 @@
-# Neue HoverMusic-Version bauen und als GitHub-Release (Tag hovermusic-vX.Y.Z) veröffentlichen.
+﻿# Neue HoverMusic-Version bauen und als GitHub-Release (Tag hovermusic-vX.Y.Z) veröffentlichen.
 # Vorher versionName/versionCode in HoverMusic\app\build.gradle.kts erhöhen und committen.
 # Benötigt: JDK 17, Android SDK (ANDROID_HOME), HoverMusic\keystore.properties, git, gh (angemeldet).
 # Das Release wird NICHT als "latest" markiert, damit der Update-Knopf von HoverBar nicht verwechselt wird.
@@ -25,6 +25,6 @@ $hash = (Get-FileHash $apk -Algorithm SHA256).Hash.ToLower()
 "$hash  HoverMusic-$ver.apk" | Set-Content "$apk.sha256" -Encoding ascii
 Write-Host "Version $ver, SHA-256 $hash"
 
-$args = @('release', 'create', $tag, $apk, "$apk.sha256", '--title', "HoverMusic $ver (Android)", '--latest=false', '--generate-notes')
-if ($Prerelease) { $args += '--prerelease' }
-gh @args
+$ghArgs = @('release', 'create', $tag, $apk, "$apk.sha256", '--title', "HoverMusic $ver (Android)", '--latest=false', '--generate-notes')
+if ($Prerelease) { $ghArgs += '--prerelease' }
+gh @ghArgs
