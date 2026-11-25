@@ -374,6 +374,7 @@ struct State {
     int musicSrc = 0;              // 0 = HoverBar-Player, 1 = Spotify
     bool duckOn = true, musicKeys = true, grabKey = true;
     bool musicOn = true;           // Musik-Player überhaupt anzeigen (aus = keine Musikleiste, keine Musik-Tasten)
+    bool claudeOn = false;         // Erweiterung "Claude-Chat" hinzugefügt (Vorgeschlagen)
     // Spielmodus-Ordner: Statistiken je App (nur solange die Ansicht offen ist)
     // Kopfzeile: WLAN/Netz, Akku, Logo
     int net = 0, netBars = 0;      // 0 kein Netz, 1 WLAN, 2 LAN, 3 Mobilfunk; Balken 0..4
@@ -593,6 +594,7 @@ static void InitIni() {
     g.hotMods = GetPrivateProfileIntW(L"Einstellungen", L"TasteMods", 0, g.ini.c_str());
     g.musicSrc = GetPrivateProfileIntW(L"Funktionen", L"MusikQuelle", 0, g.ini.c_str()) == 1 ? 1 : 0;
     g.musicOn = GetPrivateProfileIntW(L"Funktionen", L"MusikPlayer", 1, g.ini.c_str()) != 0;
+    g.claudeOn = GetPrivateProfileIntW(L"Erweiterungen", L"Claude", 0, g.ini.c_str()) != 0;
     Music_SetFolder(IniGet(L"Funktionen", L"SongOrdner"));  // leer = Musik\HoverBar
     g.shuffle = GetPrivateProfileIntW(L"Einstellungen", L"Zufall", 0, g.ini.c_str()) != 0;
     g.repeat = std::max(0, std::min(2, (int)GetPrivateProfileIntW(L"Einstellungen", L"Wiederholen", 0, g.ini.c_str())));
@@ -1510,6 +1512,14 @@ static void LayoutSuggested(int W, int pad, int y0) {
     g.hits.push_back({{pad + cw - S(16) - bw, by, pad + cw - S(16), by + bh}, HT::PlugBtn, 0});  // Installieren / Öffnen
     if (have) g.hits.push_back({{pad + cw - S(16) - 2 * bw - S(10), by, pad + cw - S(16) - bw - S(10), by + bh}, HT::PlugBtn, 1});  // Entfernen
     y += ch + S(12);
+    {   // Claude-Chat: wird nur hinzugefügt (nichts herunterzuladen)
+        int ch2 = S(168);
+        g.hits.push_back({{pad, y, pad + cw, y + ch2}, HT::PlugCard, 1});
+        int by2 = y + ch2 - S(14) - bh;
+        g.hits.push_back({{pad + cw - S(16) - bw, by2, pad + cw - S(16), by2 + bh}, HT::PlugBtn, 10});  // Hinzufügen / Öffnen
+        if (g.claudeOn) g.hits.push_back({{pad + cw - S(16) - 2 * bw - S(10), by2, pad + cw - S(16) - bw - S(10), by2 + bh}, HT::PlugBtn, 11});  // Entfernen
+        y += ch2 + S(12);
+    }
     g.contentH = y - y0;
 }
 
@@ -2240,7 +2250,7 @@ static std::vector<int> NavPages() {
     std::vector<int> p = {0};
     if (g.musicOn) p.push_back(1);
     p.push_back(2);
-    p.push_back(4);  // Claude-Chat
+    if (g.claudeOn) p.push_back(4);  // Claude-Chat (Erweiterung)
     if (!WizTree_Exe().empty()) p.push_back(3);
     return p;
 }
@@ -2944,7 +2954,24 @@ static void DrawHit(HDC dc, const Hit& h, bool hot, int cardHot) {
              DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         }
         break;
-    case HT::PlugCard: {  // WizTree: Beschreibung, Lizenz, Stand
+    case HT::PlugCard: {  // Erweiterung: Beschreibung, Lizenz, Stand
+        if (h.idx == 1) {  // Claude-Chat
+            FillRound(dc, h.rc, S(18), cCard);
+            RECT ic = {h.rc.left + S(18), h.rc.top + S(18), h.rc.left + S(18) + S(44), h.rc.top + S(18) + S(44)};
+            FillRound(dc, ic, S(12), RGB(217, 119, 87));
+            Text(dc, L"", ic, g.fGlyphL, RGB(255, 255, 255), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            int tx = ic.right + S(14);
+            Text(dc, L"Claude – KI-Chat", {tx, h.rc.top + S(16), h.rc.right - S(18), h.rc.top + S(40)}, g.fHead, cText, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            Text(dc, L"claude.ai direkt in der Leiste, schneller Chat ohne Browser.", {tx, h.rc.top + S(40), h.rc.right - S(18), h.rc.top + S(60)},
+                 g.fSmall, cDim, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+            Text(dc, L"Dafür brauchst du ein Konto bei claude.ai · nutzt WebView2 (bei Windows 11 dabei)",
+                 {h.rc.left + S(18), h.rc.top + S(76), h.rc.right - S(18), h.rc.top + S(96)}, g.fSmall, cDim, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+            Text(dc, L"Danach: „Claude“ links in der Leiste. Die Anmeldung bleibt gespeichert.",
+                 {h.rc.left + S(18), h.rc.top + S(96), h.rc.right - S(18), h.rc.top + S(116)}, g.fSmall, cDim, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+            Text(dc, g.claudeOn ? L"Hinzugefügt" : L"Nicht hinzugefügt", {h.rc.left + S(18), h.rc.bottom - S(50), h.rc.right - S(340), h.rc.bottom - S(14)}, g.fSmall,
+                 g.claudeOn ? RGB(110, 210, 140) : cDim, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            break;
+        }
         FillRound(dc, h.rc, S(18), cCard);
         RECT ic = {h.rc.left + S(18), h.rc.top + S(18), h.rc.left + S(18) + S(44), h.rc.top + S(18) + S(44)};
         FillRound(dc, ic, S(12), RGB(46, 160, 96));
@@ -2971,6 +2998,16 @@ static void DrawHit(HDC dc, const Hit& h, bool hot, int cardHot) {
         PlugStatus ps = WizTree_Status();
         bool busy = ps.state == PLUG_WORKING || ps.state == PLUG_DOWNLOADING;
         bool have = !WizTree_Exe().empty();
+        if (h.idx >= 10) {  // Claude-Chat
+            if (h.idx == 11) {
+                FillRound(dc, h.rc, S(10), hot ? RGB(200, 60, 60) : cSearch);
+                Text(dc, L"Entfernen", h.rc, g.fSmall, hot ? RGB(255, 255, 255) : RGB(255, 150, 150), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            } else {
+                FillRound(dc, h.rc, S(10), hot ? RGB(120, 180, 255) : cAccent);
+                Text(dc, g.claudeOn ? L"Claude öffnen" : L"Hinzufügen", h.rc, g.fHead, RGB(255, 255, 255), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            }
+            break;
+        }
         if (h.idx == 1) {
             FillRound(dc, h.rc, S(10), hot ? RGB(200, 60, 60) : cSearch);
             Text(dc, L"Entfernen", h.rc, g.fSmall, hot ? RGB(255, 255, 255) : RGB(255, 150, 150), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
@@ -6443,6 +6480,38 @@ static void Activate(int hitIdx, bool right) {
         Refresh();
         break;
     case HT::PlugBtn: {
+        if (h.idx >= 10) {  // Claude-Chat hinzufügen / öffnen / entfernen
+            if (h.idx == 11) {
+                if (ConfirmBox(L"Claude-Chat wieder entfernen?\nDer Claude-Knopf links verschwindet, die gespeicherte Anmeldung bei claude.ai wird gelöscht.")) {
+                    g.claudeOn = false;
+                    IniSet(L"Erweiterungen", L"Claude", L"0");
+                    Chat_Free();
+                    PWSTR lp = nullptr;
+                    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &lp))) {  // Profil der Webansicht (Anmeldung, Zwischenspeicher)
+                        std::wstring d = std::wstring(lp) + L"\\HoverBar\\webview";
+                        d.push_back(L'\0');
+                        SHFILEOPSTRUCTW op = {};
+                        op.wFunc = FO_DELETE;
+                        op.pFrom = d.c_str();
+                        op.fFlags = FOF_NO_UI | FOF_NOCONFIRMATION;
+                        SHFileOperationW(&op);
+                    }
+                    CoTaskMemFree(lp);
+                    if (g.view == View::Chat) { ShowView(View::Folders); break; }
+                }
+            } else if (!g.claudeOn) {
+                if (ConfirmBox(L"Claude-Chat hinzufügen?\n\nclaude.ai wird in einer eigenen Seite der Leiste angezeigt (WebView2, bei Windows 11 dabei). "
+                               L"Du brauchst ein Konto bei claude.ai. Beim Öffnen der Seite wird claude.ai geladen; sonst wird nichts übertragen.")) {
+                    g.claudeOn = true;
+                    IniSet(L"Erweiterungen", L"Claude", L"1");
+                }
+            } else {
+                GoToPage(4);
+                break;
+            }
+            Refresh();
+            break;
+        }
         PlugStatus ps = WizTree_Status();
         if (ps.state == PLUG_WORKING || ps.state == PLUG_DOWNLOADING) break;
         if (h.idx == 1) {

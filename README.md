@@ -24,8 +24,8 @@ Die Symbole sind unten angeheftet. Mit dem Mausrad über der Leiste blätterst d
 | Apps | Ordner mit Apps, Favoriten, Favoriten-Links, „Zuletzt genutzt“ (stark nach oben überscrollen). Klick auf „Apps“ zeigt alle Apps mit Größe, laufende mit Arbeitsspeicher und Beenden-Knopf. |
 | Bibliothek | Alle Songs, darüber fest: Favoriten, Playlists, Zuletzt gespielt. |
 | Kalender | Monatsansicht mit Terminen. |
-| Claude | claude.ai eingebettet (WebView2). Anmeldung bleibt gespeichert, der Speicher wird beim Schließen freigegeben. |
-| Speicher | Nur mit dem optionalen Plugin WizTree (Zahnrad → Vorgeschlagen). Laufwerke und größte Apps. |
+| Claude | Optionale Erweiterung (Zahnrad → Vorgeschlagen → *Hinzufügen*). claude.ai eingebettet (WebView2), Anmeldung bleibt gespeichert, der Speicher wird beim Schließen freigegeben. *Entfernen* löscht auch die gespeicherte Anmeldung. |
+| Speicher | Nur mit der optionalen Erweiterung WizTree (Zahnrad → Vorgeschlagen). Laufwerke und größte Apps. |
 
 ## Apps
 
