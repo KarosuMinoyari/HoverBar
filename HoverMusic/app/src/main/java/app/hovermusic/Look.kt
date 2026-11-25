@@ -34,6 +34,8 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -149,6 +151,15 @@ fun SettingsScreen(vm: MusicViewModel, onClose: () -> Unit, onPickFolder: () -> 
         Toggle("Cover in den Kacheln", look.tileCovers) { vm.setLook(look.copy(tileCovers = it)) }
         Toggle("Trennlinien zwischen Songs", look.lines) { vm.setLook(look.copy(lines = it)) }
         Toggle("Cover als Hintergrund bei „Läuft gerade“", look.coverBackdrop) { vm.setLook(look.copy(coverBackdrop = it)) }
+
+        Head("App")
+        Text("Version ${Updater.installed(ctx)}")
+        val updateText by Updater.status.collectAsState()
+        val update by Updater.available.collectAsState()
+        updateText?.let { Text(it, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        val u = update
+        if (u == null) TextButton(onClick = { Updater.check(ctx) }) { Text("Nach Updates suchen") }
+        else TextButton(onClick = { Updater.install(ctx, u) }) { Text("Version ${u.version} installieren") }
 
         Head("Musik")
         TextButton(onClick = onPickFolder) { Text("Musikordner wählen") }
