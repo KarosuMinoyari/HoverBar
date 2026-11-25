@@ -1,6 +1,6 @@
 # Neue HoverBar-Version bauen und als GitHub-Release veröffentlichen.
 # Vorher HB_VERSION in src\update.h erhöhen und committen. Benötigt: Visual Studio Build Tools, git, gh (angemeldet).
-param([switch]$SkipBuild)
+param([switch]$SkipBuild, [string]$Exe = 'build\HoverBar.exe')  # -SkipBuild -Exe <Pfad>: schon gebaute Datei nehmen (z. B. während HoverBar läuft)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 Set-Location $root
@@ -18,7 +18,7 @@ if (-not $SkipBuild) {
 
 $dist = Join-Path $root 'dist'
 New-Item -ItemType Directory -Force $dist | Out-Null
-Copy-Item 'build\HoverBar.exe' "$dist\HoverBar.exe" -Force
+Copy-Item $Exe "$dist\HoverBar.exe" -Force
 $hash = (Get-FileHash "$dist\HoverBar.exe" -Algorithm SHA256).Hash.ToLower()
 "$hash  HoverBar.exe" | Set-Content "$dist\HoverBar.exe.sha256" -Encoding ascii
 Write-Host "Version $ver, SHA-256 $hash"
