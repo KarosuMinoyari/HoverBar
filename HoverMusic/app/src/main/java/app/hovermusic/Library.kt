@@ -94,7 +94,7 @@ object LibraryLoader {
         // Änderungen vom Handy, die der PC noch nicht übernommen hat
         files[Edits.FILE_NAME]?.let { u ->
             val edits = Edits.parse(cr.openInputStream(u)?.use { it.readBytes().toString(Charsets.UTF_8) } ?: "")
-            library = library.copy(songs = library.songs.map { s ->
+            library = library.copy(songs = library.songs.filter { edits[it.id]?.cover != Edits.DELETE }.map { s ->
                 val e = edits[s.id] ?: return@map s
                 s.copy(title = e.title.ifEmpty { s.title }, artist = e.artist, coverUri = covers[e.cover] ?: s.coverUri, cuts = e.cuts)
             })

@@ -20,6 +20,7 @@ import androidx.compose.material3.Button
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -45,6 +46,7 @@ data class Edit(val id: String, val title: String, val artist: String, val cover
 
 object Edits {
     const val FILE_NAME = "HoverMusic-Aenderungen.txt"
+    const val DELETE = "DELETE"  // steht in der Cover-Spalte: der PC soll den Song löschen
 
     fun parse(text: String): Map<String, Edit> =
         text.lineSequence().map { it.trimEnd('\r').split('\t') }.filter { it.size >= 4 }
@@ -97,6 +99,29 @@ object Edits {
         write(ctx, target, merge(text, edit, keepCuts = cuts == null).toByteArray(Charsets.UTF_8))
     }
 
+    /** PC-Song zum Löschen vormerken; HoverBar entfernt Datei und Eintrag. */
+    fun deleteInCloud(ctx: Context, tree: Uri, folderId: String, id: String, title: String, artist: String) {
+        val old = child(ctx, tree, folderId, FILE_NAME)
+        val text = old?.let { u -> ctx.contentResolver.openInputStream(u)?.use { it.readBytes().toString(Charsets.UTF_8) } } ?: ""
+        val target = old ?: create(ctx, tree, folderId, "application/octet-stream", FILE_NAME)
+        write(ctx, target, merge(text, Edit(id, title, artist, DELETE)).toByteArray(Charsets.UTF_8))
+    }
+
+    /** Handy-Download entfernen: Dateien in der App und, falls schon hochgeladen und noch nicht eingelesen, die Kopie in der Cloud. */
+    fun deleteDownload(ctx: Context, marker: String, tree: Uri?, folderId: String?) {
+        val key = marker.removePrefix("[yt ").removeSuffix("]")
+        Downloader.dir(ctx).listFiles()?.filter { it.name.startsWith("$key.") }?.forEach { it.delete() }
+        if (tree == null || folderId == null) return
+        ctx.contentResolver.query(
+            DocumentsContract.buildChildDocumentsUriUsingTree(tree, folderId),
+            arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME), null, null, null,
+        )?.use { c ->
+            while (c.moveToNext()) if (c.getString(1)?.contains(marker) == true) {
+                DocumentsContract.deleteDocument(ctx.contentResolver, DocumentsContract.buildDocumentUriUsingTree(tree, c.getString(0)))
+            }
+        }
+    }
+
     /** Änderung eines auf dem Handy geladenen Songs. */
     fun saveLocal(ctx: Context, id: String, title: String, artist: String, newCover: Uri?, cuts: String?) {
         val dir = Downloader.dir(ctx)
@@ -127,6 +152,21 @@ fun EditDialog(vm: MusicViewModel, song: Song, onClose: () -> Unit) {
     var cutting by remember(song.id) { mutableStateOf(false) }
     if (cutting) CutScreen(song, cuts, onDone = { cuts = it; cutting = false }, onCancel = { cutting = false })
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { cover = it }
+    var confirmDelete by remember(song.id) { mutableStateOf(false) }
+    if (confirmDelete) {
+        AlertDialog(
+            onDismissRequest = { confirmDelete = false },
+            title = { Text("Song löschen?") },
+            text = {
+                Text(
+                    if (song.id.startsWith("yt:")) "„${song.title}“ wird vom Handy gelöscht."
+                    else "„${song.title}“ verschwindet hier. HoverBar löscht die Datei beim nächsten Öffnen auch am PC. Das lässt sich nicht rückgängig machen.",
+                )
+            },
+            confirmButton = { TextButton(onClick = { vm.deleteSong(song); confirmDelete = false; onClose() }) { Text("Löschen") } },
+            dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("Abbrechen") } },
+        )
+    }
     AlertDialog(
         onDismissRequest = onClose,
         title = { Text("Song bearbeiten") },
@@ -157,6 +197,7 @@ fun EditDialog(vm: MusicViewModel, song: Song, onClose: () -> Unit) {
                     )
                     repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
                 }
+                TextButton(onClick = { confirmDelete = true }) { Text("Song löschen", color = Color(0xFFFF8080)) }
                 if (song.uri != null) {
                     Button(onClick = { vm.pause(); cutting = true }, modifier = Modifier.fillMaxWidth()) { Text("Audio schneiden") }
                     if (cuts != song.cuts) Text("Schnitt wird mit „Speichern“ übernommen.", fontSize = 12.sp)

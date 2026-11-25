@@ -173,6 +173,30 @@ class MusicViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun deleteSong(s: Song) {
+        val ctx = getApplication<Application>()
+        viewModelScope.launch {
+            try {
+                val tree = prefs.treeUri?.let { Uri.parse(it) }
+                val local = s.id.startsWith("yt:")
+                // ein eingelesener Handy-Download hat die Marke im Dateinamen: dann auch die Kopie in der App löschen
+                val marker = if (local) Upload.marker(s.id) else Regex("""\[yt [^\]]+]""").find(s.file)?.value
+                withContext(Dispatchers.IO) {
+                    if (!local) Edits.deleteInCloud(ctx, tree ?: error("Kein Ordner"), folderId ?: error("Bibliothek zuerst aktualisieren"), s.id, s.title, s.artist)
+                    if (marker != null) Edits.deleteDownload(ctx, marker, if (local) tree else null, folderId)
+                }
+                controller?.let { c ->
+                    for (i in c.mediaItemCount - 1 downTo 0) if (c.getMediaItemAt(i).mediaId == s.id) c.removeMediaItem(i)
+                }
+                if (s.id in favorites.value) toggleFavorite(s.id)
+                cloud = cloud?.let { l -> l.copy(songs = l.songs.filter { it.id != s.id }) }
+                publish()
+            } catch (e: Exception) {
+                error.value = "Nicht gelöscht (${e.message}). Wähle den Musikordner in den Einstellungen neu, damit die App schreiben darf."
+            }
+        }
+    }
+
     fun toggleSort() {
         sortByPlays.value = !sortByPlays.value
         prefs.sortByPlays = sortByPlays.value

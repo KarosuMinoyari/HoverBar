@@ -1962,6 +1962,7 @@ bool Music_ImportEdits() {
         }
         if (f.size() < 4 || Music_Find(f[0]) < 0) continue;
         const std::wstring& c = f[3];
+        if (c == L"DELETE") { Music_Delete(f[0]); changed = true; continue; }  // am Handy gelöscht
         if (c.rfind(L"Cover/", 0) == 0 && c.find_first_of(L"/\\", 6) == std::wstring::npos && c.find(L"..") == std::wstring::npos) {
             if (!Music_SetCoverFromFile(f[0], dir + L"\\Cover\\" + c.substr(6))) { waiting += line + "\n"; continue; }
         }
