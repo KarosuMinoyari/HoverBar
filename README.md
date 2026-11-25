@@ -84,6 +84,7 @@ Eigene App im Ordner `HoverMusic/` (Kotlin, Jetpack Compose, Media3), mit eigene
 - **Einstellungen:** Farbe, Hintergrundbild, Glas-Effekt, Schrift, Ausfahren und die Grafik-Extras.
 - **Einhändig laden:** Direktziel „Song laden“ im Teilen-Menü oder die gleichnamige Kachel in den Schnelleinstellungen (kopierter Link).
 - **Favoriten und „Zuletzt“** liegen lokal auf dem Handy (die Favoriten vom PC werden einmal übernommen). Die Bibliothek wird beim Start und über den Aktualisieren-Knopf neu gelesen und für den Start ohne Netz zwischengespeichert. Die Songs selbst streamt oder lädt der Cloud-Anbieter beim Abspielen; wer sie offline braucht, markiert den Ordner im Cloud-App als „offline verfügbar“.
+- **Widget:** Cover (öffnet die App), Titel und Zurück/Play/Weiter. Beim Ablegen wählbar: Farbe, Größe von Schrift und Knöpfen, gefüllt oder schwebend, Fortschrittsleiste (aus, weil sie jede Sekunde aktualisiert). Läuft nichts, öffnen die Knöpfe die App.
 - **Update:** Einstellungen → *App* → *Nach Updates suchen* lädt die neueste Version (ohne Vorabversionen), prüft die SHA-256 und öffnet den Android-Installer.
 - **Installieren:** APK aus dem Release auf dem Handy öffnen und „Installation aus dieser Quelle“ erlauben (die App ist nicht im Play Store). Voraussetzung: Android 8 oder neuer.
 - **Bauen:** JDK 17 und Android SDK (Plattform 34), dann in `HoverMusic/`: `gradlew assembleDebug` bzw. `gradlew test`. Für signierte Releases liegt eine `keystore.properties` (nicht im Repo) neben dem Projekt; `tools\release-hovermusic.ps1` baut und veröffentlicht.

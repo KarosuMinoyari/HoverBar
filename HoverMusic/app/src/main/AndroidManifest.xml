@@ -73,6 +73,18 @@
             </intent-filter>
         </service>
 
+        <receiver android:name=".WidgetProvider" android:exported="false" android:label="HoverMusic">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/widget_info" />
+        </receiver>
+        <activity android:name=".WidgetConfigActivity" android:exported="true" android:theme="@style/Theme.HoverMusic">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_CONFIGURE" />
+            </intent-filter>
+        </activity>
+
         <service
             android:name=".PlaybackService"
             android:exported="true"
