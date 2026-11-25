@@ -593,6 +593,7 @@ void Music_Save() {
     WriteFile(h, u.data(), (DWORD)u.size(), &wr, nullptr);
     CloseHandle(h);
     MoveFileExW(tmp.c_str(), LibraryFile().c_str(), MOVEFILE_REPLACE_EXISTING);
+    if (Music_SyncExportOn()) Music_ExportLibrary();  // Musik-Sync: Bibliotheksdatei im Cloud-Ordner nachziehen
 }
 
 void Music_UpdateMeta(const std::wstring& id, const std::wstring& title, const std::wstring& artist) {
@@ -1734,4 +1735,159 @@ void Music_LoadLyrics(const std::wstring& id, bool online) {
     HANDLE t = CreateThread(nullptr, 0, LyricsThread, p, 0, nullptr);
     if (t) CloseHandle(t);
     else delete p;
+}
+
+// ---------------------------------------------------------------- Musik-Sync (Cloud-Ordner + Bibliotheksdatei)
+static std::atomic<bool> g_syncExport{false};
+static std::vector<std::wstring> g_favIds;
+static std::string g_lastBody;       // zuletzt geschriebener Inhalt (ohne Zeitstempel): unverändert -> nichts neu hochladen
+static std::wstring g_syncInfo;
+static SRWLOCK g_syncLock = SRWLOCK_INIT;
+static SyncStatus g_syncSt;
+
+void Music_SetSyncExport(bool on) {
+    g_syncExport = on;
+    g_lastBody.clear();
+}
+bool Music_SyncExportOn() { return g_syncExport; }
+void Music_SetFavorites(const std::vector<std::wstring>& ids) { g_favIds = ids; }
+
+static std::string JsonEsc(const std::wstring& w) {
+    std::string u = ToUtf8(w), o;
+    for (unsigned char c : u) {
+        switch (c) {
+        case '"': o += "\\\""; break;
+        case '\\': o += "\\\\"; break;
+        case '\n': o += "\\n"; break;
+        case '\r': break;
+        case '\t': o += "\\t"; break;
+        default:
+            if (c < 0x20) { char b[8]; sprintf_s(b, "\\u%04x", c); o += b; }
+            else o += (char)c;
+        }
+    }
+    return o;
+}
+static std::wstring BaseNameOf(const std::wstring& p) { return p.substr(p.find_last_of(L'\\') + 1); }
+// liegt die Datei direkt im Ordner?
+static bool DirectlyIn(const std::wstring& file, const std::wstring& dir) {
+    return file.size() > dir.size() + 1 && _wcsnicmp(file.c_str(), dir.c_str(), dir.size()) == 0 && file[dir.size()] == L'\\' &&
+           file.find(L'\\', dir.size() + 1) == std::wstring::npos;
+}
+
+// <Song-Ordner>\HoverBar-Bibliothek.json: alle Songs (relativer Dateiname, Titel, Künstler, Länge, Cover), Playlists, Favoriten.
+// Nur Songs, die wirklich im Ordner liegen, werden aufgeführt. Cover werden nach <Song-Ordner>\Cover\ kopiert.
+bool Music_ExportLibrary() {
+    if (!g_syncExport) return false;
+    std::wstring dir = Music_Folder(), coverDir = dir + L"\\Cover";
+    if (GetFileAttributesW(dir.c_str()) == INVALID_FILE_ATTRIBUTES) return false;
+    std::string songs;
+    std::vector<std::wstring> listed;
+    for (auto& s : g_songs) {
+        if (!DirectlyIn(s.file, dir) || GetFileAttributesW(s.file.c_str()) == INVALID_FILE_ATTRIBUTES) continue;
+        std::wstring cover;
+        if (!s.cover.empty() && GetFileAttributesW(s.cover.c_str()) != INVALID_FILE_ATTRIBUTES) {
+            std::wstring cn = BaseNameOf(s.cover), dst = coverDir + L"\\" + cn;
+            if (GetFileAttributesW(dst.c_str()) == INVALID_FILE_ATTRIBUTES) {
+                CreateDirectoryW(coverDir.c_str(), nullptr);
+                CopyFileW(s.cover.c_str(), dst.c_str(), TRUE);
+            }
+            if (GetFileAttributesW(dst.c_str()) != INVALID_FILE_ATTRIBUTES) cover = L"Cover/" + cn;
+        }
+        if (!songs.empty()) songs += ",\n";
+        songs += "    {\"id\":\"" + JsonEsc(s.id) + "\",\"file\":\"" + JsonEsc(BaseNameOf(s.file)) + "\",\"title\":\"" + JsonEsc(s.title) +
+                 "\",\"artist\":\"" + JsonEsc(s.artist) + "\",\"duration\":" + std::to_string(s.duration) + ",\"cover\":\"" + JsonEsc(cover) +
+                 "\",\"url\":\"" + JsonEsc(s.url) + "\"}";
+        listed.push_back(s.id);
+    }
+    auto isListed = [&](const std::wstring& id) { return std::find(listed.begin(), listed.end(), id) != listed.end(); };
+    std::string pls;
+    for (auto& p : g_playlists) {
+        std::string ids;
+        for (auto& id : p.ids)
+            if (isListed(id)) ids += (ids.empty() ? "" : ",") + std::string("\"") + JsonEsc(id) + "\"";
+        if (!pls.empty()) pls += ",\n";
+        pls += "    {\"name\":\"" + JsonEsc(p.name) + "\",\"songs\":[" + ids + "]}";
+    }
+    std::string favs;
+    for (auto& id : g_favIds)
+        if (isListed(id)) favs += (favs.empty() ? "" : ",") + std::string("\"") + JsonEsc(id) + "\"";
+    std::string body = "  \"songs\": [\n" + songs + "\n  ],\n  \"playlists\": [\n" + pls + "\n  ],\n  \"favorites\": [" + favs + "]\n";
+    std::wstring file = dir + L"\\HoverBar-Bibliothek.json";
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    wchar_t hm[16];
+    swprintf(hm, 16, L"%02d:%02d", st.wHour, st.wMinute);
+    if (body != g_lastBody || GetFileAttributesW(file.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        char ts[40];
+        sprintf_s(ts, "%04d-%02d-%02dT%02d:%02d:%02d", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+        std::string out = std::string("{\n  \"format\": \"HoverBar-Bibliothek\",\n  \"version\": 1,\n  \"updated\": \"") + ts + "\",\n" + body + "}\n";
+        std::wstring tmp = file + L".tmp";
+        HANDLE h = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (h == INVALID_HANDLE_VALUE) return false;
+        DWORD wr = 0;
+        bool ok = WriteFile(h, out.data(), (DWORD)out.size(), &wr, nullptr) && wr == out.size();
+        CloseHandle(h);
+        if (!ok || !MoveFileExW(tmp.c_str(), file.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+            DeleteFileW(tmp.c_str());
+            return false;
+        }
+        g_lastBody = body;
+        g_syncInfo = std::to_wstring(listed.size()) + (listed.size() == 1 ? L" Song" : L" Songs") + L" · Bibliothek " + hm;
+    } else if (g_syncInfo.empty()) {
+        g_syncInfo = std::to_wstring(listed.size()) + L" Songs · Bibliothek aktuell";
+    }
+    return true;
+}
+std::wstring Music_SyncInfo() { return g_syncInfo; }
+
+SyncStatus Music_SyncStatus() {
+    AcquireSRWLockShared(&g_syncLock);
+    SyncStatus s = g_syncSt;
+    ReleaseSRWLockShared(&g_syncLock);
+    return s;
+}
+static void SetSyncStatus(int state, int done, int total, const std::wstring& msg) {
+    AcquireSRWLockExclusive(&g_syncLock);
+    g_syncSt = {state, done, total, msg};
+    ReleaseSRWLockExclusive(&g_syncLock);
+}
+
+struct SyncParams {
+    HWND hwnd;
+    std::wstring dir;
+    std::vector<std::pair<std::wstring, std::wstring>> songs;  // ID, Datei
+};
+static DWORD WINAPI SyncThread(LPVOID p) {
+    auto* prm = (SyncParams*)p;
+    auto* res = new SyncResult();
+    int total = (int)prm->songs.size(), done = 0;
+    CreateDirectoryW(prm->dir.c_str(), nullptr);
+    SetSyncStatus(1, 0, total, L"Verschiebe Songs …");
+    for (auto& s : prm->songs) {
+        const std::wstring& file = s.second;
+        if (!DirectlyIn(file, prm->dir) && GetFileAttributesW(file.c_str()) != INVALID_FILE_ATTRIBUTES) {
+            std::wstring name = BaseNameOf(file), dst = prm->dir + L"\\" + name;
+            for (int n = 2; GetFileAttributesW(dst.c_str()) != INVALID_FILE_ATTRIBUTES; n++)
+                dst = prm->dir + L"\\" + name.substr(0, name.size() - 4) + L" (" + std::to_wstring(n) + L").mp3";
+            if (MoveFileExW(file.c_str(), dst.c_str(), MOVEFILE_COPY_ALLOWED)) res->moved.push_back({s.first, dst});
+            else res->failed++;
+        }
+        SetSyncStatus(1, ++done, total, L"Verschiebe Songs …");
+        PostMessageW(prm->hwnd, WM_APP_MUSIC, MUSIC_JOBS, 0);  // Fortschritt neu zeichnen lassen
+    }
+    SetSyncStatus(res->failed ? 3 : 2, done, total,
+                  res->failed ? std::to_wstring(res->failed) + L" Songs konnten nicht verschoben werden (in Benutzung?)" : L"Fertig");
+    if (!PostMessageW(prm->hwnd, WM_APP_MUSIC, MUSIC_SYNC, (LPARAM)res)) delete res;
+    delete prm;
+    return 0;
+}
+void Music_SyncSetup(HWND notify, const std::wstring& dir) {
+    if (Music_SyncStatus().state == 1) return;
+    auto* p = new SyncParams{notify, dir, {}};
+    for (auto& s : g_songs) p->songs.push_back({s.id, s.file});
+    SetSyncStatus(1, 0, (int)p->songs.size(), L"Verschiebe Songs …");
+    HANDLE t = CreateThread(nullptr, 0, SyncThread, p, 0, nullptr);
+    if (t) CloseHandle(t);
+    else { delete p; SetSyncStatus(3, 0, 0, L"Konnte nicht starten."); }
 }

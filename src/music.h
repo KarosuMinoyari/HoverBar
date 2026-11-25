@@ -9,7 +9,26 @@
 
 enum { WM_APP_MUSIC = WM_APP + 40 };
 // wParam: MUSIC_SONG (lParam = Song*, Empfänger löscht), MUSIC_JOBS (Fortschritt), MUSIC_COVERS (lParam = CoverResults*)
-enum { MUSIC_SONG = 1, MUSIC_JOBS = 2, MUSIC_COVERS = 3, MUSIC_WAVE = 4, MUSIC_TOOL = 5, MUSIC_LYRICS = 6 };
+enum { MUSIC_SONG = 1, MUSIC_JOBS = 2, MUSIC_COVERS = 3, MUSIC_WAVE = 4, MUSIC_TOOL = 5, MUSIC_LYRICS = 6, MUSIC_SYNC = 7 };
+
+// ---- Musik-Sync (Erweiterung): Songs in einem Cloud-Ordner, dazu HoverBar-Bibliothek.json mit Playlists, Favoriten und Covern (Cover\ daneben).
+// Die Datei ist das Austauschformat für andere Geräte (z. B. eine Handy-App): Dateinamen sind relativ zum Ordner.
+struct SyncStatus {
+    int state = 0;  // 0 nichts, 1 verschiebt Songs, 2 fertig, 3 Fehler
+    int done = 0, total = 0;
+    std::wstring msg;
+};
+struct SyncResult {  // MUSIC_SYNC (lParam = SyncResult*, Empfänger löscht): neue Dateipfade der verschobenen Songs
+    std::vector<std::pair<std::wstring, std::wstring>> moved;  // Song-ID, neuer Pfad
+    int failed = 0;
+};
+void Music_SetSyncExport(bool on);                         // Bibliotheksdatei bei jeder Änderung schreiben
+bool Music_SyncExportOn();
+void Music_SetFavorites(const std::vector<std::wstring>& ids);
+bool Music_ExportLibrary();                                // schreibt HoverBar-Bibliothek.json in den Song-Ordner und kopiert fehlende Cover in dessen Unterordner Cover
+std::wstring Music_SyncInfo();                             // "27 Songs · Bibliothek 12:30"
+void Music_SyncSetup(HWND notify, const std::wstring& dir);  // Songs im Hintergrund in den Ordner verschieben (Ergebnis als MUSIC_SYNC)
+SyncStatus Music_SyncStatus();
 
 // Songtexte: zuerst "<Song>.lrc" neben der MP3, sonst online bei lrclib.net (kostenlos, ohne Konto) – Treffer wird als .lrc gespeichert
 struct LyricLine {

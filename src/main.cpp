@@ -375,6 +375,8 @@ struct State {
     bool duckOn = true, musicKeys = true, grabKey = true;
     bool musicOn = true;           // Musik-Player überhaupt anzeigen (aus = keine Musikleiste, keine Musik-Tasten)
     bool claudeOn = false;         // Erweiterung "Claude-Chat" hinzugefügt (Vorgeschlagen)
+    bool syncOn = false;           // Erweiterung "Musik-Sync" eingerichtet
+    std::wstring syncDir, syncNote;  // Cloud-Ordner der Songs; Hinweis auf der Karte
     // Spielmodus-Ordner: Statistiken je App (nur solange die Ansicht offen ist)
     // Kopfzeile: WLAN/Netz, Akku, Logo
     int net = 0, netBars = 0;      // 0 kein Netz, 1 WLAN, 2 LAN, 3 Mobilfunk; Balken 0..4
@@ -603,6 +605,9 @@ static void InitIni() {
     g.musicSrc = GetPrivateProfileIntW(L"Funktionen", L"MusikQuelle", 0, g.ini.c_str()) == 1 ? 1 : 0;
     g.musicOn = GetPrivateProfileIntW(L"Funktionen", L"MusikPlayer", 1, g.ini.c_str()) != 0;
     g.claudeOn = GetPrivateProfileIntW(L"Erweiterungen", L"Claude", 0, g.ini.c_str()) != 0;
+    g.syncOn = GetPrivateProfileIntW(L"Erweiterungen", L"MusikSync", 0, g.ini.c_str()) != 0;
+    g.syncDir = IniGet(L"Erweiterungen", L"MusikSyncOrdner");
+    Music_SetSyncExport(g.syncOn);
     Music_SetFolder(IniGet(L"Funktionen", L"SongOrdner"));  // leer = Musik\HoverBar
     g.shuffle = GetPrivateProfileIntW(L"Einstellungen", L"Zufall", 0, g.ini.c_str()) != 0;
     g.repeat = std::max(0, std::min(2, (int)GetPrivateProfileIntW(L"Einstellungen", L"Wiederholen", 0, g.ini.c_str())));
@@ -1530,6 +1535,14 @@ static void LayoutSuggested(int W, int pad, int y0) {
         if (g.claudeOn) g.hits.push_back({{pad + cw - S(16) - 2 * bw - S(10), by2, pad + cw - S(16) - bw - S(10), by2 + bh}, HT::PlugBtn, 11});  // Entfernen
         y += ch2 + S(12);
     }
+    {   // Musik-Sync: Songs und Playlists in einem Cloud-Ordner
+        int ch3 = S(190);
+        g.hits.push_back({{pad, y, pad + cw, y + ch3}, HT::PlugCard, 2});
+        int by3 = y + ch3 - S(14) - bh;
+        g.hits.push_back({{pad + cw - S(16) - bw, by3, pad + cw - S(16), by3 + bh}, HT::PlugBtn, 20});  // Einrichten / Jetzt abgleichen
+        if (g.syncOn) g.hits.push_back({{pad + cw - S(16) - 2 * bw - S(10), by3, pad + cw - S(16) - bw - S(10), by3 + bh}, HT::PlugBtn, 21});  // Ausschalten
+        y += ch3 + S(12);
+    }
     g.contentH = y - y0;
 }
 
@@ -1689,6 +1702,7 @@ static std::wstring JoinIds(const std::vector<std::wstring>& v) {
 static void LoadFavRecent() {
     g.favIds = SplitList(IniGetLong(L"Musik", L"Favoriten"));
     g.recentIds = SplitList(IniGetLong(L"Musik", L"ZuletztGespielt"));
+    Music_SetFavorites(g.favIds);
 }
 static bool IsFav(const std::wstring& id) { return std::find(g.favIds.begin(), g.favIds.end(), id) != g.favIds.end(); }
 static void BuildFavRecent() {
@@ -1703,6 +1717,8 @@ static void ToggleFav(const std::wstring& id) {
     else g.favIds.insert(g.favIds.begin(), id);  // neueste zuerst
     IniSet(L"Musik", L"Favoriten", JoinIds(g.favIds).c_str());
     BuildFavRecent();
+    Music_SetFavorites(g.favIds);
+    if (g.syncOn) Music_ExportLibrary();  // Musik-Sync: Favoriten in die Bibliotheksdatei
 }
 static void AddRecentSong(const std::wstring& id) {
     if (id.empty()) return;
@@ -3017,6 +3033,28 @@ static void DrawHit(HDC dc, const Hit& h, bool hot, int cardHot) {
                  g.claudeOn ? RGB(110, 210, 140) : cDim, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
             break;
         }
+        if (h.idx == 2) {  // Musik-Sync
+            FillRound(dc, h.rc, S(18), cCard);
+            RECT ic = {h.rc.left + S(18), h.rc.top + S(18), h.rc.left + S(18) + S(44), h.rc.top + S(18) + S(44)};
+            FillRound(dc, ic, S(12), RGB(66, 120, 214));
+            Text(dc, L"", ic, g.fGlyphL, RGB(255, 255, 255), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            int tx = ic.right + S(14);
+            Text(dc, L"Musik-Sync – Musik aufs Handy", {tx, h.rc.top + S(16), h.rc.right - S(18), h.rc.top + S(40)}, g.fHead, cText, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            Text(dc, L"Songs, Cover und Playlists in deiner Cloud, damit eine Handy-App sie spielen kann.", {tx, h.rc.top + S(40), h.rc.right - S(18), h.rc.top + S(60)},
+                 g.fSmall, cDim, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+            Text(dc, L"Mit jedem Cloud-Ordner: Google Drive, OneDrive, MEGA, pCloud, Koofr, Dropbox … (fehlende Dienste lassen sich hier laden)",
+                 {h.rc.left + S(18), h.rc.top + S(76), h.rc.right - S(18), h.rc.top + S(96)}, g.fSmall, cDim, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+            Text(dc, L"Playlists und Favoriten stehen in HoverBar-Bibliothek.json, Cover im Unterordner Cover.",
+                 {h.rc.left + S(18), h.rc.top + S(96), h.rc.right - S(18), h.rc.top + S(116)}, g.fSmall, cDim, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+            SyncStatus ss = Music_SyncStatus();
+            std::wstring st = ss.state == 1 ? L"Verschiebe Songs … " + std::to_wstring(ss.done) + L" / " + std::to_wstring(ss.total)
+                            : ss.state == 3 ? ss.msg
+                            : g.syncOn ? L"Aktiv: " + g.syncDir + (Music_SyncInfo().empty() ? L"" : L" · " + Music_SyncInfo())
+                            : g.syncNote.empty() ? L"Nicht eingerichtet" : g.syncNote;
+            Text(dc, st, {h.rc.left + S(18), h.rc.bottom - S(50), h.rc.right - S(340), h.rc.bottom - S(14)}, g.fSmall,
+                 ss.state == 3 ? RGB(255, 150, 150) : g.syncOn ? RGB(110, 210, 140) : cDim, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_PATH_ELLIPSIS);
+            break;
+        }
         FillRound(dc, h.rc, S(18), cCard);
         RECT ic = {h.rc.left + S(18), h.rc.top + S(18), h.rc.left + S(18) + S(44), h.rc.top + S(18) + S(44)};
         FillRound(dc, ic, S(12), RGB(46, 160, 96));
@@ -3043,7 +3081,19 @@ static void DrawHit(HDC dc, const Hit& h, bool hot, int cardHot) {
         PlugStatus ps = WizTree_Status();
         bool busy = ps.state == PLUG_WORKING || ps.state == PLUG_DOWNLOADING;
         bool have = !WizTree_Exe().empty();
-        if (h.idx >= 10) {  // Claude-Chat
+        if (h.idx == 20 || h.idx == 21) {  // Musik-Sync
+            SyncStatus ss = Music_SyncStatus();
+            if (h.idx == 21) {
+                FillRound(dc, h.rc, S(10), hot ? RGB(200, 60, 60) : cSearch);
+                Text(dc, L"Ausschalten", h.rc, g.fSmall, hot ? RGB(255, 255, 255) : RGB(255, 150, 150), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            } else {
+                FillRound(dc, h.rc, S(10), ss.state == 1 ? cSearch : hot ? RGB(120, 180, 255) : cAccent);
+                Text(dc, ss.state == 1 ? L"Bitte warten …" : g.syncOn ? L"Jetzt abgleichen" : L"Einrichten …", h.rc, g.fHead, RGB(255, 255, 255),
+                     DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            }
+            break;
+        }
+        if (h.idx == 10 || h.idx == 11) {  // Claude-Chat
             if (h.idx == 11) {
                 FillRound(dc, h.rc, S(10), hot ? RGB(200, 60, 60) : cSearch);
                 Text(dc, L"Entfernen", h.rc, g.fSmall, hot ? RGB(255, 255, 255) : RGB(255, 150, 150), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
@@ -5955,6 +6005,194 @@ static int SetSongFolder(const std::wstring& path, bool moveExisting) {
     return moved;
 }
 
+// ---------------------------------------------------------------- Musik-Sync: Cloud-Dienste erkennen, auswählen, einrichten
+struct CloudProv {
+    std::wstring name, quota, url, base;  // Anzeigename, gratis-Speicher, Download-Seite, Basisordner (leer = nicht installiert)
+    bool reportsFree = false;             // zeigt das Laufwerk den freien Cloud-Speicher? (Google Drive, pCloud)
+};
+static std::wstring DriveWithLabel(const wchar_t* label) {
+    for (wchar_t c = L'D'; c <= L'Z'; c++) {
+        wchar_t root[4] = {c, L':', L'\\', 0}, lab[MAX_PATH] = {};
+        if (GetDriveTypeW(root) != DRIVE_NO_ROOT_DIR && GetVolumeInformationW(root, lab, MAX_PATH, nullptr, nullptr, nullptr, nullptr, 0) && _wcsicmp(lab, label) == 0)
+            return root;
+    }
+    return L"";
+}
+static std::wstring EnvPath(const wchar_t* name) {
+    wchar_t b[MAX_PATH * 2];
+    DWORD n = GetEnvironmentVariableW(name, b, MAX_PATH * 2);
+    return n && n < MAX_PATH * 2 ? std::wstring(b) : L"";
+}
+static bool DirExists(const std::wstring& p) {
+    DWORD a = GetFileAttributesW(p.c_str());
+    return !p.empty() && a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY);
+}
+static std::vector<CloudProv> ListClouds() {
+    std::vector<CloudProv> v;
+    std::wstring home = EnvPath(L"USERPROFILE");
+    {   // Google Drive für Desktop: Laufwerk "Google Drive", darin "Meine Ablage" / "My Drive"
+        CloudProv c{L"Google Drive", L"15 GB gratis", L"https://www.google.com/drive/download/", L"", true};
+        std::wstring root = DriveWithLabel(L"Google Drive");
+        if (!root.empty()) {
+            std::wstring first;
+            WIN32_FIND_DATAW fd;
+            HANDLE h = FindFirstFileW((root + L"*").c_str(), &fd);
+            if (h != INVALID_HANDLE_VALUE) {
+                do {
+                    if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || fd.cFileName[0] == L'.' || fd.cFileName[0] == L'$') continue;
+                    std::wstring n = fd.cFileName;
+                    if (n == L"My Drive" || n == L"Meine Ablage" || n == L"Mein Laufwerk" || n == L"Mon Drive" || n == L"Mi unidad") { first = n; break; }
+                    if (first.empty()) first = n;
+                } while (FindNextFileW(h, &fd));
+                FindClose(h);
+            }
+            if (!first.empty()) c.base = root + first;
+        }
+        v.push_back(c);
+    }
+    {
+        CloudProv c{L"OneDrive", L"5 GB gratis, bei Windows dabei", L"https://www.microsoft.com/microsoft-365/onedrive/download", EnvPath(L"OneDrive"), false};
+        if (!DirExists(c.base)) c.base.clear();
+        v.push_back(c);
+    }
+    {
+        CloudProv c{L"Koofr", L"10 GB gratis, kleiner Anbieter", L"https://koofr.eu/desktop-apps/", L"", false};
+        for (const wchar_t* d : {L"\\Koofr", L"\\Koofr Sync", L"\\Koofr Desktop"})
+            if (DirExists(home + d)) { c.base = home + d; break; }
+        v.push_back(c);
+    }
+    {
+        CloudProv c{L"MEGA", L"20 GB gratis", L"https://mega.io/desktop", L"", false};
+        for (const wchar_t* d : {L"\\MEGA", L"\\MEGAsync"})
+            if (DirExists(home + d)) { c.base = home + d; break; }
+        v.push_back(c);
+    }
+    {
+        CloudProv c{L"pCloud", L"10 GB gratis", L"https://www.pcloud.com/download-free-online-cloud-file-storage.html", L"", true};
+        std::wstring root = DriveWithLabel(L"pCloud Drive");
+        if (root.empty()) root = DriveWithLabel(L"pCloud");
+        if (!root.empty() && DirExists(root + L"Sync")) c.base = root + L"Sync";
+        else if (!root.empty()) c.base = root.substr(0, root.size() - 1);
+        v.push_back(c);
+    }
+    {
+        CloudProv c{L"Dropbox", L"2 GB gratis", L"https://www.dropbox.com/install", home + L"\\Dropbox", false};
+        if (!DirExists(c.base)) c.base.clear();
+        v.push_back(c);
+    }
+    return v;
+}
+static std::wstring FmtGB(unsigned long long bytes) {
+    wchar_t b[32];
+    swprintf(b, 32, L"%.1f GB", bytes / 1073741824.0);
+    for (auto& ch : b) if (ch == L'.') ch = L',';
+    return b;
+}
+
+static void SyncSetupFlow() {
+    std::vector<CloudProv> clouds = ListClouds();
+    HMENU m = CreatePopupMenu();
+    for (int i = 0; i < (int)clouds.size(); i++) {
+        auto& c = clouds[i];
+        std::wstring label;
+        if (!c.base.empty()) {
+            ULARGE_INTEGER fr = {}, tot = {}, fa = {};
+            std::wstring free;
+            if (c.reportsFree && GetDiskFreeSpaceExW(c.base.c_str(), &fr, &tot, &fa)) free = L", " + FmtGB(fr.QuadPart) + L" frei";
+            label = L"✓  " + c.name + L"  (" + c.quota + free + L")";
+        } else {
+            label = c.name + L" herunterladen …  (" + c.quota + L")";
+        }
+        AppendMenuW(m, MF_STRING, i + 1, label.c_str());
+    }
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_STRING, 100, L"Eigenen Ordner wählen …");
+    int cmd = TrackMenu(m);
+    if (cmd <= 0) return;
+
+    std::wstring dir, cloudName;
+    bool reportsFree = false;
+    if (cmd == 100) {
+        IFileOpenDialog* dlg = nullptr;
+        if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dlg)))) return;
+        DWORD opt = 0;
+        dlg->GetOptions(&opt);
+        dlg->SetOptions(opt | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
+        dlg->SetTitle(L"Ordner deines Cloud-Programms wählen");
+        g.menuOpen = true;
+        HRESULT hr = dlg->Show(g.hwnd);
+        g.menuOpen = false;
+        SetForegroundWindow(g.hwnd);
+        if (SUCCEEDED(hr)) {
+            IShellItem* it = nullptr;
+            if (SUCCEEDED(dlg->GetResult(&it))) {
+                PWSTR p = nullptr;
+                if (SUCCEEDED(it->GetDisplayName(SIGDN_FILESYSPATH, &p))) { dir = p; CoTaskMemFree(p); }
+                it->Release();
+            }
+        }
+        dlg->Release();
+        if (dir.empty()) return;
+        cloudName = L"deinem Ordner";
+        dir += L"\\HoverBar-Musik";
+    } else {
+        auto& c = clouds[cmd - 1];
+        if (c.base.empty()) {  // nicht installiert: Download-Seite öffnen, danach hier nochmal "Einrichten"
+            ShellExecuteW(nullptr, L"open", c.url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+            g.syncNote = L"Lade " + c.name + L" und melde dich an, danach hier nochmal auf „Einrichten“ klicken.";
+            return;
+        }
+        dir = c.base + L"\\HoverBar-Musik";
+        cloudName = c.name;
+        reportsFree = c.reportsFree;
+    }
+
+    // Wie viel muss hochgeladen werden? (Songs, die noch nicht im Ordner liegen)
+    Music_Init(g.hwnd);
+    unsigned long long need = 0;
+    size_t n = 0;
+    for (auto& s : Music_Songs()) {
+        WIN32_FILE_ATTRIBUTE_DATA fa;
+        if (!GetFileAttributesExW(s.file.c_str(), GetFileExInfoStandard, &fa)) continue;
+        n++;
+        if (_wcsnicmp(s.file.c_str(), dir.c_str(), dir.size()) != 0) need += ((unsigned long long)fa.nFileSizeHigh << 32) | fa.nFileSizeLow;
+    }
+    std::wstring spaceLine;
+    if (reportsFree) {
+        ULARGE_INTEGER fr = {}, tot = {}, fa = {};
+        if (GetDiskFreeSpaceExW(dir.substr(0, dir.find_last_of(L'\\')).c_str(), &fr, &tot, &fa)) {
+            if (fr.QuadPart < need + need / 20 + (50ull << 20)) {
+                g.menuOpen = true;
+                MessageBoxW(g.hwnd, (L"In " + cloudName + L" ist nicht genug Platz frei.\n\nBenötigt: " + FmtGB(need) + L", frei: " + FmtGB(fr.QuadPart) +
+                                     L"\n\nWähle einen anderen Dienst (z. B. MEGA mit 20 GB oder Koofr mit 10 GB gratis) oder gib in " + cloudName + L" Platz frei.").c_str(),
+                            L"HoverBar", MB_OK | MB_ICONWARNING | MB_TOPMOST);
+                g.menuOpen = false;
+                return;
+            }
+            spaceLine = L"\nFrei in der Cloud: " + FmtGB(fr.QuadPart) + L".";
+        }
+    } else {
+        spaceLine = L"\nPrüfe, ob in deinem Cloud-Konto genug frei ist.";
+    }
+    if (!ConfirmBox(L"Musik-Sync mit " + cloudName + L" einrichten?\n\n" + std::to_wstring(n) + L" Songs (" + FmtGB(need) + L") werden nach\n" + dir +
+                    L"\nverschoben und dort vom Cloud-Programm hochgeladen. Playlists, Favoriten und Cover kommen als HoverBar-Bibliothek.json dazu." + spaceLine +
+                    L"\n\nDie Songs liegen danach in deinem Cloud-Konto: nur privat nutzen, nicht teilen."))
+        return;
+    if (SetSongFolder(dir, false) < 0) {
+        g.syncNote = L"Ordner konnte nicht angelegt werden: " + dir;
+        return;
+    }
+    g.syncOn = true;
+    g.syncDir = dir;
+    g.syncNote.clear();
+    IniSet(L"Erweiterungen", L"MusikSync", L"1");
+    IniSet(L"Erweiterungen", L"MusikSyncOrdner", dir.c_str());
+    Music_SetFavorites(g.favIds);
+    Music_SetSyncExport(true);
+    if (Player_State().active) { Player_Stop(); g.pst = PlayerState(); }  // Dateien freigeben
+    Music_SyncSetup(g.hwnd, dir);
+}
+
 // Ordner für neue Songs wählen; auf Wunsch die vorhandenen Songs mitnehmen
 static void PickSongFolder() {
     IFileOpenDialog* dlg = nullptr;
@@ -6555,7 +6793,27 @@ static void Activate(int hitIdx, bool right) {
         Refresh();
         break;
     case HT::PlugBtn: {
-        if (h.idx >= 10) {  // Claude-Chat hinzufügen / öffnen / entfernen
+        if (h.idx == 20 || h.idx == 21) {  // Musik-Sync
+            if (Music_SyncStatus().state == 1) break;
+            if (h.idx == 21) {
+                if (ConfirmBox(L"Musik-Sync ausschalten?\n\nDie Songs bleiben im Cloud-Ordner, HoverBar spielt sie weiter von dort. "
+                               L"Die Bibliotheksdatei wird nicht mehr aktualisiert.")) {
+                    g.syncOn = false;
+                    IniSet(L"Erweiterungen", L"MusikSync", L"0");
+                    Music_SetSyncExport(false);
+                }
+            } else if (g.syncOn) {  // abgleichen: verstreute Songs in den Ordner holen, Bibliothek neu schreiben
+                Music_Init(g.hwnd);
+                Music_SetFavorites(g.favIds);
+                if (Player_State().active) { Player_Stop(); g.pst = PlayerState(); }
+                Music_SyncSetup(g.hwnd, Music_Folder());
+            } else {
+                SyncSetupFlow();
+            }
+            Refresh();
+            break;
+        }
+        if (h.idx == 10 || h.idx == 11) {  // Claude-Chat hinzufügen / öffnen / entfernen
             if (h.idx == 11) {
                 if (ConfirmBox(L"Claude-Chat wieder entfernen?\nDer Claude-Knopf links verschwindet, die gespeicherte Anmeldung bei claude.ai wird gelöscht.")) {
                     g.claudeOn = false;
@@ -7490,7 +7748,19 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             Music_Save();
             BuildMusic();
             if (g.open && !g.closing) Refresh();
+        } else if (wp == MUSIC_SYNC) {  // Musik-Sync: Songs sind verschoben -> neue Pfade übernehmen, Bibliotheksdatei schreiben
+            auto* r = (SyncResult*)lp;
+            for (auto& mv : r->moved) {
+                int i = Music_Find(mv.first);
+                if (i >= 0) Music_Songs()[i].file = mv.second;
+            }
+            Music_Save();  // schreibt auch HoverBar-Bibliothek.json
+            Music_ExportLibrary();
+            BuildMusic();
+            delete r;
+            if (g.open && !g.closing) Refresh();
         } else if (wp == MUSIC_JOBS) {
+            if (g.open && !g.closing && g.view == View::Settings) Render();  // Fortschritt der Musik-Sync-Karte
             if (g.open && !g.closing && g.view == View::Music) Refresh();
         } else if (wp == MUSIC_TOOL) {  // yt-dlp: neuer Stand (Fortschritt, fertig, Fehler)
             if (!g.pendingUrl.empty()) {  // ein Link wartet auf den Download
@@ -7547,6 +7817,23 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             std::wstring p((const wchar_t*)cd->lpData, cd->cbData / sizeof(wchar_t) - 1);
             SetSongFolder(p, true);
             if (g.open && !g.closing) Refresh();
+        } else if (cd && cd->dwData == 2 && cd->cbData >= sizeof(wchar_t)) {  // "--musiksync <Ordner>": Musik-Sync ohne Rückfragen einrichten (Tests)
+            std::wstring p((const wchar_t*)cd->lpData, cd->cbData / sizeof(wchar_t) - 1);
+            Music_Init(hwnd);
+            if (SetSongFolder(p, false) >= 0) {
+                g.syncOn = true;
+                g.syncDir = p;
+                IniSet(L"Erweiterungen", L"MusikSync", L"1");
+                IniSet(L"Erweiterungen", L"MusikSyncOrdner", p.c_str());
+                Music_SetFavorites(g.favIds);
+                Music_SetSyncExport(true);
+                if (Player_State().active) { Player_Stop(); g.pst = PlayerState(); }
+                Music_SyncSetup(hwnd, p);
+            }
+        } else if (cd && cd->dwData == 3) {  // "--musiksync-aus"
+            g.syncOn = false;
+            IniSet(L"Erweiterungen", L"MusikSync", L"0");
+            Music_SetSyncExport(false);
         }
         return TRUE;
     }
@@ -8051,6 +8338,19 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmd, int) {
         HWND other = FindWindowW(kClass, nullptr);
         if (other) {
             COPYDATASTRUCT cd = {1, (DWORD)((p.size() + 1) * sizeof(wchar_t)), (PVOID)p.c_str()};
+            SendMessageW(other, WM_COPYDATA, 0, (LPARAM)&cd);
+        }
+        if (mutex) CloseHandle(mutex);
+        return 0;
+    }
+    if (cmd && (wcsstr(cmd, L"--musiksync ") || wcsstr(cmd, L"--musiksync-aus"))) {  // Test: Musik-Sync der laufenden Instanz ein-/ausschalten
+        bool off = wcsstr(cmd, L"--musiksync-aus") != nullptr;
+        std::wstring p = off ? L"" : std::wstring(wcsstr(cmd, L"--musiksync ") + 12);
+        p.erase(std::remove(p.begin(), p.end(), L'"'), p.end());
+        while (!p.empty() && (p.back() == L' ' || p.back() == L'\\')) p.pop_back();
+        HWND other = FindWindowW(kClass, nullptr);
+        if (other) {
+            COPYDATASTRUCT cd = {off ? 3u : 2u, (DWORD)((p.size() + 1) * sizeof(wchar_t)), (PVOID)p.c_str()};
             SendMessageW(other, WM_COPYDATA, 0, (LPARAM)&cd);
         }
         if (mutex) CloseHandle(mutex);

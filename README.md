@@ -46,6 +46,27 @@ Eigener Player für die Songs im Musikordner (Standard `Musik\HoverBar`, änderb
 - **Leiser bei Videos:** Spielt ein Browser oder Video-Player Ton, wird die Musik auf 10 % abgesenkt.
 - Alles lässt sich unter Funktionen abschalten (Hauptschalter „Musik-Player“), auch zu Spotify wechseln.
 
+## Musik-Sync (Erweiterung: Musik aufs Handy)
+
+Optional unter Zahnrad → Vorgeschlagen → *Musik-Sync*. Legt deine Songs, Cover und Playlists in einen Ordner deines Cloud-Programms, damit andere Geräte (z. B. eine Handy-App) sie spielen können.
+
+- **Beliebiger Anbieter:** HoverBar erkennt installierte Cloud-Programme (Google Drive, OneDrive, Koofr, MEGA, pCloud, Dropbox) und zeigt bei Google Drive und pCloud den freien Platz. Fehlt ein Dienst, öffnet der Eintrag dessen Download-Seite. Alternativ ein eigener Ordner. Reicht der Platz nicht, bricht HoverBar vor dem Verschieben ab (bei Anbietern, die ihren Speicher nicht als Laufwerk zeigen, steht ein Hinweis).
+- **Einrichten:** Die Songs werden im Hintergrund in `<Cloud>\HoverBar-Musik` verschoben, danach spielt HoverBar von dort. Neue Downloads landen ebenfalls dort. Das Cloud-Programm lädt hoch, HoverBar selbst überträgt nichts ins Internet. Nur für die eigene Musik gedacht, nicht zum Teilen.
+- **Bibliotheksdatei:** `HoverBar-Bibliothek.json` im Ordner wird bei jeder Änderung (Songs, Playlists, Favoriten) aktualisiert, nur wenn sich der Inhalt geändert hat. Cover liegen in `Cover/`. Aufbau:
+
+```json
+{
+  "format": "HoverBar-Bibliothek", "version": 1, "updated": "2026-11-25T12:30:00",
+  "songs": [ {"id":"…","file":"Name.mp3","title":"…","artist":"…","duration":156,"cover":"Cover/….jpg","url":"https://…"} ],
+  "playlists": [ {"name":"…","songs":["id", …]} ],
+  "favorites": ["id", …]
+}
+```
+
+`file` und `cover` sind relativ zum Ordner. Aufgeführt werden nur Songs, die wirklich im Ordner liegen.
+- **Ausschalten:** Die Songs bleiben im Cloud-Ordner, nur die Bibliotheksdatei wird nicht mehr gepflegt.
+- **Test ohne Rückfragen:** `HoverBar.exe --musiksync <Ordner>` richtet den Sync in einem beliebigen Ordner ein, `--musiksync-aus` schaltet ihn ab (bei laufender HoverBar).
+
 ## Spiele
 
 Ordner im Spielmodus (Standard: „Spiele“) zeigen Größe, Spielzeit und „zuletzt gespielt“ als Liste. Quellen: Steam, Epic Games, Riot Games, andere Spiele (selbst gemessen); je einzeln abschaltbar. Bisherige Spielzeit lässt sich per Rechtsklick nachtragen.
