@@ -6520,8 +6520,12 @@ static std::vector<CloudProv> ListClouds() {
     }
     {
         CloudProv c{L"MEGA", L"20 GB gratis", L"https://mega.io/desktop", L"", false, L"Mega.MEGASync", L"mega.privacy.android.app", L""};
-        for (const wchar_t* d : {L"\\MEGA", L"\\MEGAsync"})
-            if (DirExists(home + d)) { c.base = home + d; break; }
+        PWSTR docs = nullptr;  // das neuere MEGA legt den Ordner unter "Dokumente" an
+        std::wstring docDir;
+        if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Documents, 0, nullptr, &docs))) docDir = docs;
+        CoTaskMemFree(docs);
+        for (const std::wstring& d : {home + L"\\MEGA", docDir + L"\\MEGA", home + L"\\MEGAsync", home + L"\\Documents\\MEGA"})
+            if (d.size() > 5 && DirExists(d)) { c.base = d; break; }
         v.push_back(c);
     }
     {
