@@ -45,7 +45,7 @@ static const wchar_t* kRunName = L"HoverBar";
 enum { WM_APP_LIST = WM_APP + 1, WM_APP_ICON, WM_APP_DONE, WM_APP_SHOW };
 enum { WM_APP_SCROLLGO = WM_APP + 70, WM_APP_FAVICON };
 static LARGE_INTEGER sScrollStart = {};
-enum { T_POLL = 1, T_WATCH, T_FREE, T_CARET, T_REDRAW, T_DRAG, T_TIP, T_SCROLL, T_PLAYER, T_PIDLE, T_HOTKEY, T_ENDHOLD, T_GRAB, T_DUCK, T_GAMES, T_VOL, T_RUN, T_LYR, T_NPDROP, T_LYRBACK };
+enum { T_POLL = 1, T_WATCH, T_FREE, T_CARET, T_REDRAW, T_DRAG, T_TIP, T_SCROLL, T_PLAYER, T_PIDLE, T_HOTKEY, T_ENDHOLD, T_GRAB, T_DUCK, T_GAMES, T_VOL, T_RUN, T_LYR, T_NPDROP, T_LYRBACK, T_CHATFREE };
 // Musik leiser, solange ein Browser/Video-Player Ton ausgibt
 static double sDuck = 1.0;
 static bool sDucked = false;
@@ -413,6 +413,14 @@ struct State {
     View npReturn = View::Music;          // wohin "Zurück" führt
     int npFolder = -1;
     bool lyrAnim = false;
+    // Beim Schließen gemerkte Ansicht: öffnet man die Leiste binnen 10 s wieder, ist alles noch so da
+    struct Resume {
+        ULONGLONG at = 0;
+        View view = View::Folders;
+        int folder = -1, scroll = 0, scrollR = 0, libTab = 0, setTab = 0, curPlaylist = -1, npFolder = -1;
+        View npReturn = View::Music;
+        std::wstring query;
+    } resume;
     // Bibliothek: 0 Alle Songs, 1 Favoriten, 2 Playlists, 3 Zuletzt gespielt
     int libTab = 0;
     std::vector<std::wstring> favIds, recentIds;  // Song-IDs (neueste zuerst)
@@ -2581,10 +2589,35 @@ static void FreeCovers() {
 }
 
 // Cover zeichnen (nach dem Zusammensetzen) oder Platzhalter mit Notensymbol
-// Claude-Symbol (von claude.ai geholt wie die Website-Symbole der Favoriten-Links); nullptr, solange es fehlt
+// Claude-Symbol (von claude.ai geholt wie die Website-Symbole der Favoriten-Links), aber nur der helle Strahlenstern ohne die orange Fläche:
+// die Helligkeit im Blaukanal (Orange ≈ 70–90, Stern ≈ 220+) wird zur Deckkraft, gezeichnet wird in Weiß. nullptr, solange das Symbol fehlt.
 static HBITMAP ClaudeIcon(int px) {
     std::wstring f = FaviconFile(L"claude.ai");
-    return GetFileAttributesW(f.c_str()) != INVALID_FILE_ATTRIBUTES ? CoverBmp(f, px) : nullptr;
+    if (GetFileAttributesW(f.c_str()) == INVALID_FILE_ATTRIBUTES) return nullptr;
+    std::wstring key = L"claude-glyph|" + std::to_wstring(px);
+    auto it = g.coverCache.find(key);
+    if (it != g.coverCache.end()) return it->second;
+    HBITMAP bmp = nullptr;
+    std::vector<uint32_t> img;
+    if (LoadImageCover(f, px, px, img)) {
+        BITMAPINFO bi = {};
+        bi.bmiHeader = {sizeof(BITMAPINFOHEADER), px, -px, 1, 32, BI_RGB};
+        void* bits = nullptr;
+        bmp = CreateDIBSection(nullptr, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+        if (bmp) {
+            uint32_t* d = (uint32_t*)bits;
+            for (size_t i = 0; i < (size_t)px * px; i++) {
+                int b = img[i] & 255;
+                float t = (b - 110) / 90.f;  // 110 -> 0, 200 -> 1
+                t = t < 0 ? 0 : t > 1 ? 1 : t;
+                t = t * t * (3 - 2 * t);
+                int a = (int)(255 * t), c = 245 * a / 255;  // weiß (leicht gedämpft), vormultipliziert
+                d[i] = ((uint32_t)a << 24) | ((uint32_t)c << 16) | ((uint32_t)c << 8) | (uint32_t)c;
+            }
+        }
+    }
+    g.coverCache[key] = bmp;
+    return bmp;
 }
 
 static void DrawCover(HDC dc, const std::wstring& path, int x, int y, int px) {
@@ -2966,10 +2999,10 @@ static void DrawHit(HDC dc, const Hit& h, bool hot, int cardHot) {
         if (h.idx == 1) {  // Claude-Chat
             FillRound(dc, h.rc, S(18), cCard);
             RECT ic = {h.rc.left + S(18), h.rc.top + S(18), h.rc.left + S(18) + S(44), h.rc.top + S(18) + S(44)};
-            if (HBITMAP cb = ClaudeIcon(ic.right - ic.left)) {
-                g.iconQueue.push_back({-3, ic.left, ic.top, ic.right - ic.left, CurrentClip(dc), g.drawFade, cb});
+            FillRound(dc, ic, S(12), cCardHot);
+            if (HBITMAP cb = ClaudeIcon(S(32))) {
+                g.iconQueue.push_back({-3, ic.left + S(6), ic.top + S(6), S(32), CurrentClip(dc), g.drawFade, cb});
             } else {
-                FillRound(dc, ic, S(12), RGB(217, 119, 87));
                 Text(dc, L"", ic, g.fGlyphL, RGB(255, 255, 255), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             }
             int tx = ic.right + S(14);
@@ -4864,10 +4897,14 @@ static void OpenBluetoothPanel() {
 }
 
 static void FinishClose() {
+    // Ansicht merken (Seite, Ordner, Scrollstand, Suche): innerhalb von 10 s wieder öffnen -> alles noch da
+    g.resume = {GetTickCount64(), g.view == View::SongEdit ? View::Music : g.view, g.curFolder, g.scroll, g.scrollR, g.libTab, g.setTab, g.curPlaylist,
+                g.npFolder, g.npReturn, g.query};
     ShowWindow(g.hwnd, SW_HIDE);
     StopScrollAnim();
     ClearTextCache();  // Arbeitsspeicher frei, solange zu
-    Chat_Free();       // Claude-Webansicht beenden (Anmeldung bleibt gespeichert)
+    Chat_Hide();
+    SetTimer(g.hwnd, T_CHATFREE, 10000, nullptr);  // Claude-Webansicht erst nach 10 s beenden (so lange geht das Wiederöffnen sofort); Anmeldung bleibt gespeichert
     KillTimer(g.hwnd, T_RUN);
     g.showRecent = false;  // "Zuletzt genutzt" beim nächsten Öffnen wieder versteckt
     g.running.clear();
@@ -4962,18 +4999,37 @@ static void OpenBar(POINT pt) {
     KillTimer(g.hwnd, T_PIDLE);
     SetTimer(g.hwnd, T_PLAYER, 400, nullptr);
 
+    KillTimer(g.hwnd, T_CHATFREE);
     g.view = View::Folders;
     g.curFolder = -1;
     StopScrollAnim();
     g.scroll = g.scrollR = 0;
     g.namingFor = -1;
     g.creatingFolder = false;
+    bool resumed = g.resume.at && GetTickCount64() - g.resume.at < 10000 && g.resume.view != View::Folders;
+    g.resume.at = 0;
     timeBeginPeriod(1);  // genauere Timer für flüssiges Scrollen, nur solange die Leiste offen ist
     g.hot = g.pressed = -1;
     g.query.clear();
     g.results.clear();
     g.caretOn = true;
     if (!g.loaded && !g.loading) StartLoad();
+    if (resumed) {  // vor weniger als 10 s geschlossen: dieselbe Seite wieder zeigen
+        const auto& r = g.resume;
+        g.view = r.view;
+        g.curFolder = r.folder;
+        g.libTab = r.libTab;
+        g.setTab = r.setTab;
+        g.curPlaylist = r.curPlaylist;
+        g.npReturn = r.npReturn;
+        g.npFolder = r.npFolder;
+        g.query = r.query;
+        if (g.view == View::Search) UpdateSearch();
+        ApplyWidth();
+        g.scroll = r.scroll;
+        g.scrollR = r.scrollR;
+        Log(L"Wiederöffnen binnen 10 s: letzte Ansicht bleibt");
+    }
 
     g.open = true;
     g.closing = false;
@@ -7078,6 +7134,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 if (g.onlyRunning) SortAppSizes();
                 Refresh();
             }
+        } else if (wp == T_CHATFREE) {  // 10 s nach dem Schließen nicht wieder geöffnet: Claude-Webansicht beenden (gibt den Speicher frei)
+            KillTimer(hwnd, T_CHATFREE);
+            if (!g.open) { Chat_Free(); TrimMemory(); }
         } else if (wp == T_LYRBACK) {  // 2 s nicht mehr im Songtext gedreht: zurück zur aktuellen Zeile
             KillTimer(hwnd, T_LYRBACK);
             g.lyrManual = false;

@@ -135,9 +135,10 @@ void Chat_Show(HWND owner, const RECT& sr, int corner) {
         reg = true;
     }
     if (!g_wnd) {
-        g_wnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, L"HoverBarChat", L"Claude", WS_POPUP | WS_CLIPCHILDREN,
+        g_wnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_LAYERED, L"HoverBarChat", L"Claude", WS_POPUP | WS_CLIPCHILDREN,
                                 sr.left, sr.top, sr.right - sr.left, sr.bottom - sr.top, owner, nullptr, GetModuleHandleW(nullptr), nullptr);
         if (!g_wnd) return;
+        SetLayeredWindowAttributes(g_wnd, 0, 178, LWA_ALPHA);  // durchsichtig: die Glasleiste scheint durch
         // runde Ecken wie die Karten der Leiste (Windows 11)
         DWM_WINDOW_CORNER_PREFERENCE pref = DWMWCP_ROUNDSMALL;
         DwmSetWindowAttribute(g_wnd, DWMWA_WINDOW_CORNER_PREFERENCE, &pref, sizeof(pref));
