@@ -81,7 +81,7 @@ bool Music_ToolAvailable();
 // ---- Bearbeiten
 void Music_UpdateMeta(const std::wstring& id, const std::wstring& title, const std::wstring& artist);
 bool Music_SetCoverFromFile(const std::wstring& id, const std::wstring& imagePath);  // zuschneiden, speichern, in MP3 eintragen
-void Music_SearchCovers(const std::wstring& id, const std::wstring& query);          // Ergebnis kommt als MUSIC_COVERS
+void Music_SearchCovers(const std::wstring& id, const std::wstring& artist, const std::wstring& title);  // Ergebnis kommt als MUSIC_COVERS
 void Music_Delete(const std::wstring& id);
 double Music_Length(const std::wstring& id);                               // echte Länge der MP3 in Sekunden
 bool Music_Trim(const std::wstring& id, double from, double to, bool keepInside);  // verlustfrei schneiden

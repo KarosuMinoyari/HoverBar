@@ -424,6 +424,8 @@ struct State {
     int editReturnTab = 0;
     std::vector<std::wstring> coverResults;      // gefundene Cover (lokale Vorschaudateien)
     bool coverSearching = false;
+    bool coverNone = false;                      // Suche war fertig, aber ohne Treffer
+    std::wstring pendingUrl;                     // Link wartet auf den yt-dlp-Download
     std::map<std::wstring, HBITMAP> coverCache;
     PlayerState pst;                             // eigener Player
     bool dragMusic = false;
@@ -1827,6 +1829,9 @@ static void LayoutSongEdit(int W, int pad, int y0) {
     if (g.coverSearching) {
         g.hits.push_back({{pad, y, pad + cw, y + S(30)}, HT::EditInfo, 0});
         y += S(38);
+    } else if (g.coverNone) {
+        g.hits.push_back({{pad, y, pad + cw, y + S(56)}, HT::EditInfo, 13});
+        y += S(64);
     } else if (!g.coverResults.empty()) {
         int c = 4, gp = S(8), sz = (cw - 3 * gp) / 4;
         for (int k = 0; k < (int)g.coverResults.size(); k++) {
@@ -3243,7 +3248,7 @@ static void DrawHit(HDC dc, const Hit& h, bool hot, int cardHot) {
         RECT b = {h.rc.left + S(16), h.rc.top + S(42), h.rc.right - S(16), h.rc.bottom - S(10)};
         Text(dc, L"Noch keine Songs", a, g.fHead, cText, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
         Text(dc, Music_ToolAvailable() ? L"Füge oben einen YouTube-Link ein und drück Enter. Der Song wird als MP3 gespeichert und bekommt automatisch ein Cover."
-                                       : L"yt-dlp fehlt in %LOCALAPPDATA%\\HoverBar\\tools – ohne das Programm kann HoverBar keine Links umwandeln.",
+                                       : L"yt-dlp fehlt noch. Füge oben einen Link ein und drück Enter: HoverBar fragt dann, ob es yt-dlp herunterladen soll (oder Zahnrad → Funktionen → yt-dlp).",
              b, g.fSmall, cDim, DT_LEFT | DT_WORDBREAK);
         break;
     }
@@ -3582,10 +3587,13 @@ static void DrawHit(HDC dc, const Hit& h, bool hot, int cardHot) {
     case HT::EditInfo:
         if (h.idx >= 10) {  // Bibliothek: leere Liste
             FillRound(dc, h.rc, S(14), cCardHot);
+            RECT tr = h.rc;
+            if (h.idx == 13) { tr.left += S(14); tr.right -= S(14); }
             Text(dc, h.idx == 10 ? L"Noch keine Playlist – über das Zahnrad oben rechts anlegen"
                      : h.idx == 11 ? L"Noch keine Favoriten – tippe beim Song aufs Herz"
+                     : h.idx == 13 ? L"Keine Cover gefunden. Prüfe die Internetverbindung oder ändere Titel und Künstler unten (z. B. ohne Zusätze wie „Official Video“) und such nochmal."
                                    : L"Noch nichts gespielt",
-                 h.rc, g.fSmall, cDim, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+                 tr, g.fSmall, cDim, h.idx == 13 ? (DT_CENTER | DT_VCENTER | DT_WORDBREAK) : (DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS));
         } else if (h.pane == 1) {
             FillRound(dc, h.rc, S(14), cCardHot);
             Text(dc, L"Noch keine Playlist – unten eine anlegen", h.rc, g.fSmall, cDim, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
@@ -3816,7 +3824,7 @@ static void DrawScene(HDC dc, int W, int H) {
     } else {
         if (g.view == View::Music) {
             DrawField(dc, {pad, S(58), W - pad, S(94)}, g.query,
-                      Music_ToolAvailable() ? L"YouTube-Link einfügen (Strg+V), dann Enter" : L"yt-dlp fehlt – Links können nicht umgewandelt werden", true);
+                      Music_ToolAvailable() ? L"YouTube-Link einfügen (Strg+V), dann Enter" : L"YouTube-Link einfügen, dann Enter (yt-dlp wird dann geladen)", true);
         } else if (g.view == View::MusicList) {
             size_t n = MusicListItems(g.curPlaylist).size();
             Text(dc, std::to_wstring(n) + (n == 1 ? L" Song" : L" Songs"), {pad + S(4), S(58), W - pad, S(94)}, g.fText, cDim, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
@@ -5749,6 +5757,7 @@ static void OpenSongEdit(int songIdx) {
     g.editField = 1;
     g.coverResults.clear();
     g.coverSearching = false;
+    g.coverNone = false;
     g.query.clear();
     g.trimLen = Music_Length(s->id);
     Log((L"Song bearbeiten: " + s->title + L", Länge " + std::to_wstring((int)g.trimLen) + L" s").c_str());
@@ -5765,6 +5774,7 @@ static void LeaveSongEdit() {
     g.editField = 0;
     g.coverResults.clear();
     g.coverSearching = false;
+    g.coverNone = false;
     if (g.editReturn == View::Settings) { g.setTab = g.editReturnTab; ShowView(View::Settings); }
     else ShowView(g.editReturn == View::SongEdit ? View::Music : g.editReturn, g.editReturn == View::Folder ? g.curFolder : -1);
 }
@@ -6191,7 +6201,8 @@ static void Activate(int hitIdx, bool right) {
         } else if (h.idx == 1) {
             g.coverSearching = true;
             g.coverResults.clear();
-            Music_SearchCovers(g.editId, g.editArtist + L" " + g.editTitle);
+            g.coverNone = false;
+            Music_SearchCovers(g.editId, g.editArtist, g.editTitle);
             Refresh();
         } else if (h.idx == 2) {
             Music_UpdateMeta(g.editId, g.editTitle, g.editArtist);
@@ -6699,6 +6710,30 @@ static bool EditKey(WPARAM vk) {
     return true;
 }
 
+// Link als Song laden. Fehlt yt-dlp (es liegt nicht im Programmordner, sondern wird einmal heruntergeladen),
+// fragt HoverBar nach und lädt den Link danach automatisch.
+static void QueueLink(const std::wstring& url) {
+    if (Music_ToolAvailable()) {
+        Music_Init(g.hwnd);
+        Music_AddUrl(url);
+        return;
+    }
+    ToolStatus ts = Music_ToolStatus();
+    if (ts.state == TOOL_CHECKING || ts.state == TOOL_DOWNLOADING || ts.state == TOOL_VERIFYING) { g.pendingUrl = url; return; }  // läuft schon
+    Log(L"yt-dlp fehlt: frage nach dem Download");
+    bool wasOpen = g.open;
+    g.menuOpen = true;
+    int r = MessageBoxW(wasOpen ? g.hwnd : nullptr,
+                        L"Zum Umwandeln von YouTube-Links braucht HoverBar das Programm yt-dlp. Es fehlt noch.\n\n"
+                        L"Jetzt von GitHub herunterladen (ca. 18 MB, mit Prüfsumme)? Der Link wird danach automatisch geladen.",
+                        L"HoverBar", MB_YESNO | MB_ICONQUESTION | MB_TOPMOST | MB_SETFOREGROUND);
+    g.menuOpen = false;
+    if (r == IDYES) {
+        g.pendingUrl = url;
+        Music_ToolUpdate(g.hwnd);
+    }
+}
+
 static void OnKeyDown(WPARAM vk) {
     bool ctrl = GetKeyState(VK_CONTROL) & 0x8000;
     if (vk == VK_ESCAPE) {
@@ -6719,9 +6754,9 @@ static void OnKeyDown(WPARAM vk) {
             LeaveSongEdit();
         } else if (g.view == View::Music) {
             std::wstring u = g.query;
-            if (!u.empty() && Music_ToolAvailable()) {
-                Music_AddUrl(u);
+            if (!u.empty()) {
                 g.query.clear();
+                QueueLink(u);
                 Refresh();
             }
         } else if (g.namingFor >= 0 || g.creatingFolder) FinishNaming();
@@ -6780,7 +6815,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         SetTimer(hwnd, T_POLL, kPollMs, nullptr);
         // Taste anmelden; hält der Wächter sie noch kurz, gleich nochmal versuchen
         if (g.hotVk && !RegisterHotKey(hwnd, 1, g.hotMods | MOD_NOREPEAT, g.hotVk)) SetTimer(hwnd, T_HOTKEY, 300, nullptr);
-        if (g.grabKey && g.musicOn) RegisterHotKey(hwnd, 5, MOD_ALT | MOD_NOREPEAT, VK_END);  // markierten Link als Song laden
+        if (g.grabKey && g.musicOn && !RegisterHotKey(hwnd, 5, MOD_ALT | MOD_NOREPEAT, VK_END))  // markierten Link als Song laden
+            Log((L"Alt+Ende konnte nicht belegt werden (Fehler " + std::to_wstring(GetLastError()) + L") – ein anderes Programm nutzt die Tastenkombination").c_str());
         Media_SetSpotifyOnly(SpotifyMode());
         Games_Init(hwnd, g.ini);
         LoadLinks();  // Favoriten-Links, fehlende Website-Symbole im Hintergrund holen
@@ -6987,6 +7023,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 Log((L"Alt+Ende: lade " + t).c_str());
                 MessageBeep(MB_OK);
                 if (g.open) { BuildMusic(); Render(); }
+            } else if (link) {  // Link gefunden, aber yt-dlp fehlt: nachfragen und danach laden
+                Log((L"Alt+Ende: Link " + t + L", aber yt-dlp fehlt").c_str());
+                QueueLink(t);
             } else {
                 Log(L"Alt+Ende: kein Link markiert");
                 MessageBeep(MB_ICONHAND);
@@ -7240,6 +7279,22 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         } else if (wp == MUSIC_JOBS) {
             if (g.open && !g.closing && g.view == View::Music) Refresh();
         } else if (wp == MUSIC_TOOL) {  // yt-dlp: neuer Stand (Fortschritt, fertig, Fehler)
+            if (!g.pendingUrl.empty()) {  // ein Link wartet auf den Download
+                ToolStatus ts = Music_ToolStatus();
+                if (ts.state == TOOL_DONE || ts.state == TOOL_ERROR || ts.state == TOOL_IDLE) {
+                    std::wstring u = g.pendingUrl;
+                    g.pendingUrl.clear();
+                    if (ts.state == TOOL_DONE && Music_ToolAvailable()) {
+                        Music_Init(g.hwnd);
+                        Music_AddUrl(u);
+                        Log((L"yt-dlp geladen, lade jetzt " + u).c_str());
+                        MessageBeep(MB_OK);
+                    } else {
+                        Log(L"yt-dlp konnte nicht geladen werden");
+                        MessageBeep(MB_ICONHAND);
+                    }
+                }
+            }
             if (g.open && !g.closing && (g.view == View::Settings || g.view == View::Music)) Render();
         } else if (wp == MUSIC_WAVE) {
             auto* r = (WaveResult*)lp;
@@ -7266,6 +7321,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (r->songId == g.editId && g.view == View::SongEdit) {
                 g.coverResults = r->files;
                 g.coverSearching = false;
+                g.coverNone = r->files.empty();
                 if (g.open && !g.closing) Refresh();
             }
             delete r;

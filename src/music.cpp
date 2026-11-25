@@ -649,6 +649,39 @@ static std::vector<std::wstring> FindCoverUrls(const std::wstring& query, size_t
     return urls;
 }
 
+static std::wstring CleanTitle(std::wstring s);  // weiter unten (Songtexte)
+
+// YouTube-Titel sind selten sauber ("Künstler - Titel | Synthwave | NCS (Official Video)"): erst bereinigt suchen, dann gröber, zuletzt roh
+static std::vector<std::wstring> FindCoverUrlsSmart(const std::wstring& artist, const std::wstring& title, size_t max) {
+    std::vector<std::wstring> queries;
+    auto addQ = [&](std::wstring q) {
+        while (!q.empty() && q.front() == L' ') q.erase(0, 1);
+        while (!q.empty() && q.back() == L' ') q.pop_back();
+        if (q.size() >= 2 && std::find(queries.begin(), queries.end(), q) == queries.end()) queries.push_back(q);
+    };
+    std::wstring t = CleanTitle(title), a = artist;
+    size_t dash = t.find(L" - ");
+    if (dash != std::wstring::npos) {  // "Künstler - Titel": beide Teile nutzen
+        addQ(t.substr(0, dash) + L" " + CleanTitle(t.substr(dash + 3)));
+        addQ(CleanTitle(t.substr(dash + 3)) + L" " + t.substr(0, dash));
+    }
+    size_t sep = a.find_first_of(L",&");
+    std::wstring firstArtist = sep == std::wstring::npos ? a : a.substr(0, sep);
+    addQ(firstArtist + L" " + t);
+    addQ(a + L" " + t);
+    addQ(t);
+    addQ(a + L" " + title);
+    std::vector<std::wstring> out;
+    int tries = 0;
+    for (auto& q : queries) {
+        if (++tries > 5) break;
+        for (auto& u : FindCoverUrls(q, max))
+            if (std::find(out.begin(), out.end(), u) == out.end() && out.size() < max) out.push_back(u);
+        if (!out.empty()) break;
+    }
+    return out;
+}
+
 static std::wstring TempDir() {
     wchar_t t[MAX_PATH];
     GetTempPathW(MAX_PATH, t);
@@ -657,14 +690,14 @@ static std::wstring TempDir() {
     return d;
 }
 
-struct CoverSearchParams { std::wstring id, query; };
+struct CoverSearchParams { std::wstring id, artist, title; };
 
 static DWORD WINAPI CoverSearchThread(LPVOID p) {
     auto* prm = (CoverSearchParams*)p;
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     auto* res = new CoverResults();
     res->songId = prm->id;
-    auto urls = FindCoverUrls(prm->query, 8);
+    auto urls = FindCoverUrlsSmart(prm->artist, prm->title, 8);
     int n = 0;
     for (auto& u : urls) {
         std::wstring file = TempDir() + L"\\suche_" + std::to_wstring(GetTickCount64()) + L"_" + std::to_wstring(n++) + L".jpg";
@@ -676,9 +709,11 @@ static DWORD WINAPI CoverSearchThread(LPVOID p) {
     return 0;
 }
 
-void Music_SearchCovers(const std::wstring& id, const std::wstring& query) {
-    HANDLE t = CreateThread(nullptr, 0, CoverSearchThread, new CoverSearchParams{id, query}, 0, nullptr);
+void Music_SearchCovers(const std::wstring& id, const std::wstring& artist, const std::wstring& title) {
+    auto* p = new CoverSearchParams{id, artist, title};
+    HANDLE t = CreateThread(nullptr, 0, CoverSearchThread, p, 0, nullptr);
     if (t) CloseHandle(t);
+    else delete p;
 }
 
 // ---------------------------------------------------------------- YouTube -> MP3
@@ -976,7 +1011,7 @@ static DWORD WINAPI JobThread(LPVOID) {
         UpdateJob(idx, 3, 100);
         std::wstring coverTmp = TempDir() + L"\\cover_" + s.id + L".jpg";
         bool haveCover = false;
-        for (auto& u : FindCoverUrls(s.artist + L" " + s.title, 1))
+        for (auto& u : FindCoverUrlsSmart(s.artist, s.title, 1))
             if (SUCCEEDED(URLDownloadToFileW(nullptr, u.c_str(), coverTmp.c_str(), 0, nullptr))) haveCover = true;
         if (!haveCover && !id.empty()) {
             for (const wchar_t* q : {L"maxresdefault", L"hqdefault"}) {
