@@ -8,3 +8,6 @@ migrate/
 *.update
 *.alt.exe
 dist/
+local.properties
+*.jks
+keystore.properties
