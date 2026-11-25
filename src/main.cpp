@@ -50,7 +50,7 @@ static std::wstring sCloudMsg;
 enum { WM_APP_LIST = WM_APP + 1, WM_APP_ICON, WM_APP_DONE, WM_APP_SHOW };
 enum { WM_APP_SCROLLGO = WM_APP + 70, WM_APP_FAVICON };
 static LARGE_INTEGER sScrollStart = {};
-enum { T_POLL = 1, T_WATCH, T_FREE, T_CARET, T_REDRAW, T_DRAG, T_TIP, T_SCROLL, T_PLAYER, T_PIDLE, T_HOTKEY, T_ENDHOLD, T_GRAB, T_DUCK, T_GAMES, T_VOL, T_RUN, T_LYR, T_NPDROP, T_LYRBACK, T_CHATFREE };
+enum { T_POLL = 1, T_WATCH, T_FREE, T_CARET, T_REDRAW, T_DRAG, T_TIP, T_SCROLL, T_PLAYER, T_PIDLE, T_HOTKEY, T_ENDHOLD, T_GRAB, T_DUCK, T_GAMES, T_VOL, T_RUN, T_LYR, T_NPDROP, T_LYRBACK, T_CHATFREE, T_CLOUDWAIT };
 // Musik leiser, solange ein Browser/Video-Player Ton ausgibt
 static double sDuck = 1.0;
 static bool sDucked = false;
@@ -6038,7 +6038,7 @@ static bool ConfirmCareful(const std::wstring& msg, const wchar_t* actionText) {
     // eigener Dialog statt Ja/Nein: nur der Knopf mit dem Namen der Aktion stimmt zu, "Abbrechen" ist vorbelegt (Tastenkürzel wie J/N tun nichts)
     TASKDIALOG_BUTTON btns[] = {{100, actionText}, {IDCANCEL, L"Abbrechen"}};
     TASKDIALOGCONFIG c = {sizeof(c)};
-    c.hwndParent = g.hwnd;
+    c.hwndParent = g.open ? g.hwnd : nullptr;
     c.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION;
     c.pszWindowTitle = L"HoverBar";
     c.pszMainInstruction = L"Bitte bestätigen";
@@ -6052,7 +6052,7 @@ static bool ConfirmCareful(const std::wstring& msg, const wchar_t* actionText) {
     g.menuOpen = true;
     HRESULT hr = TaskDialogIndirect(&c, &btn, nullptr, nullptr);
     g.menuOpen = false;
-    SetForegroundWindow(g.hwnd);
+    if (g.open) SetForegroundWindow(g.hwnd);
     if (FAILED(hr) || btn != 100) return false;
     if (GetTickCount64() - t0 < 700) {  // schneller als lesbar: durchgeklickt
         Log(L"Bestätigung zu schnell beantwortet – als Nein gewertet");
@@ -6191,6 +6191,82 @@ static void ShowPhoneQr() {
     if (sQrWnd) SetForegroundWindow(sQrWnd);
 }
 
+// ---- Nach der Installation: Programm starten, auf die Anmeldung warten (der Ordner erscheint), Einrichtung automatisch fortsetzen
+static void CloudSet(int st, const std::wstring& msg);
+static std::wstring sCloudName;       // Dienst, der gerade installiert wurde
+static std::wstring sCloudWait;       // Dienst, auf dessen Anmeldung gewartet wird (leer = nichts)
+static ULONGLONG sCloudWaitSince = 0;
+// Verknüpfung des Programms im Startmenü suchen (Name enthält das Stichwort) und starten, damit man sich anmelden kann
+static bool LaunchCloudApp(const std::wstring& keyword, bool run = true, std::wstring* found = nullptr) {
+    std::vector<std::wstring> roots;
+    PWSTR p = nullptr;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Programs, 0, nullptr, &p))) roots.push_back(p);
+    CoTaskMemFree(p);
+    p = nullptr;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_CommonPrograms, 0, nullptr, &p))) roots.push_back(p);
+    CoTaskMemFree(p);
+    std::wstring key = Lower(keyword);
+    for (auto& root : roots) {
+        std::vector<std::wstring> dirs = {root};
+        for (size_t d = 0; d < dirs.size() && d < 60; d++) {
+            WIN32_FIND_DATAW fd;
+            HANDLE h = FindFirstFileW((dirs[d] + L"\\*").c_str(), &fd);
+            if (h == INVALID_HANDLE_VALUE) continue;
+            do {
+                std::wstring name = fd.cFileName;
+                if (name == L"." || name == L"..") continue;
+                if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) { dirs.push_back(dirs[d] + L"\\" + name); continue; }
+                std::wstring low = Lower(name);
+                if (low.size() > 4 && low.compare(low.size() - 4, 4, L".lnk") == 0 && low.find(key) != std::wstring::npos &&
+                    low.find(L"uninstall") == std::wstring::npos && low.find(L"deinstall") == std::wstring::npos) {
+                    std::wstring lnk = dirs[d] + L"\\" + name;
+                    FindClose(h);
+                    if (found) *found = lnk;
+                    if (run) ShellExecuteW(nullptr, L"open", lnk.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                    return true;
+                }
+            } while (FindNextFileW(h, &fd));
+            FindClose(h);
+        }
+    }
+    return false;
+}
+static const wchar_t* CloudLaunchKeyword(const std::wstring& name) {
+    if (name == L"MEGA") return L"MEGAsync";
+    return name.c_str();
+}
+static std::vector<CloudProv> ListClouds();
+static void SyncSetupFinish(const std::wstring& dir, const std::wstring& cloudName, const std::wstring& pkg, const std::wstring& parent, bool reportsFree, bool custom);
+static void CloudWaitStart(const std::wstring& name) {
+    sCloudWait = name;
+    sCloudWaitSince = GetTickCount64();
+    SetTimer(g.hwnd, T_CLOUDWAIT, 4000, nullptr);
+}
+static void CloudWaitStop() {
+    sCloudWait.clear();
+    KillTimer(g.hwnd, T_CLOUDWAIT);
+}
+// alle paar Sekunden: ist der Cloud-Ordner da (= angemeldet)? Dann mit der Einrichtung weitermachen
+static void CloudWaitTick() {
+    if (sCloudWait.empty()) { KillTimer(g.hwnd, T_CLOUDWAIT); return; }
+    if (GetTickCount64() - sCloudWaitSince > 20ull * 60 * 1000) {
+        CloudSet(3, sCloudWait + L": keine Anmeldung bemerkt (20 Minuten). Melde dich an und klicke dann hier auf „Einrichten“.");
+        CloudWaitStop();
+        if (g.open && !g.closing && g.view == View::Settings) Render();
+        return;
+    }
+    for (auto& c : ListClouds())
+        if (c.name == sCloudWait && !c.base.empty()) {
+            std::wstring name = c.name;
+            CloudWaitStop();
+            CloudSet(0, L"");
+            Log(L"Cloud-Ordner gefunden, setze die Einrichtung fort: " + name);
+            SyncSetupFinish(c.base + L"\\HoverBar-Musik", c.name, c.androidPkg, c.parentHint, c.reportsFree, false);
+            if (g.open && !g.closing) Refresh();
+            return;
+        }
+}
+
 // ---- Cloud-Programm per winget installieren (wie yt-dlp: ein Klick, Fortschritt auf der Karte)
 enum { WM_APP_CLOUD = WM_APP + 100 };
 static bool WingetAvailable() {
@@ -6208,6 +6284,7 @@ static void StartCloudInstall(const CloudProv& c) {
         if (sCloudState == 1) return;
     }
     Log(L"Cloud-Installation gestartet: " + c.wingetId);
+    sCloudName = c.name;
     CloudSet(1, c.name + L" wird installiert … (Windows fragt eventuell nach Administratorrechten)");
     struct Job { HWND h; std::wstring name, id; };
     auto* j = new Job{g.hwnd, c.name, c.wingetId};
@@ -6317,6 +6394,7 @@ static std::wstring FmtGB(unsigned long long bytes) {
     return b;
 }
 
+static void SyncSetupFinish(const std::wstring& dir, const std::wstring& cloudName, const std::wstring& pkg, const std::wstring& parent, bool reportsFree, bool custom);
 static void SyncSetupFlow() {
     std::vector<CloudProv> clouds = ListClouds();
     HMENU m = CreatePopupMenu();
@@ -6328,6 +6406,8 @@ static void SyncSetupFlow() {
             std::wstring free;
             if (c.reportsFree && GetDiskFreeSpaceExW(c.base.c_str(), &fr, &tot, &fa)) free = L", " + FmtGB(fr.QuadPart) + L" frei";
             label = L"✓  " + c.name + L"  (" + c.quota + free + L")";
+        } else if (LaunchCloudApp(CloudLaunchKeyword(c.name), false)) {  // installiert, aber noch kein Cloud-Ordner: Anmeldung fehlt
+            label = c.name + L" ist installiert – öffnen und anmelden …";
         } else {
             label = c.name + (!c.wingetId.empty() && WingetAvailable() ? L" installieren …  (" : L" herunterladen (Seite öffnen) …  (") + c.quota + L")";
         }
@@ -6366,6 +6446,11 @@ static void SyncSetupFlow() {
         dir += L"\\HoverBar-Musik";
     } else {
         auto& c = clouds[cmd - 1];
+        if (c.base.empty() && LaunchCloudApp(CloudLaunchKeyword(c.name), true)) {  // schon installiert: starten, auf die Anmeldung warten, dann automatisch weiter
+            CloudSet(2, c.name + L" wurde gestartet. Melde dich dort an – HoverBar macht danach automatisch mit dem Einrichten weiter.");
+            CloudWaitStart(c.name);
+            return;
+        }
         if (c.base.empty()) {  // nicht installiert: per winget installieren (ein Klick), sonst Download-Seite öffnen
             if (!c.wingetId.empty() && WingetAvailable()) {
                 if (ConfirmCareful(c.name + L" jetzt installieren?\n\nHoverBar nutzt dafür den Windows-Paketmanager winget (Paket \"" + c.wingetId +
@@ -6385,6 +6470,11 @@ static void SyncSetupFlow() {
         reportsFree = c.reportsFree;
     }
 
+    SyncSetupFinish(dir, cloudName, pkg, parent, reportsFree, cmd == 100);
+}
+
+// Rückfrage, Platzprüfung, Ordner umstellen, Songs im Hintergrund verschieben (danach QR-Code)
+static void SyncSetupFinish(const std::wstring& dir, const std::wstring& cloudName, const std::wstring& pkg, const std::wstring& parent, bool reportsFree, bool custom) {
     // Wie viel muss hochgeladen werden? (Songs, die noch nicht im Ordner liegen)
     Music_Init(g.hwnd);
     unsigned long long need = 0;
@@ -6423,7 +6513,7 @@ static void SyncSetupFlow() {
     g.syncOn = true;
     g.syncDir = dir;
     g.syncNote.clear();
-    g.syncCloud = cmd == 100 ? L"Cloud" : cloudName;  // für den QR-Code: welcher Dienst, welcher Ordner
+    g.syncCloud = custom ? L"Cloud" : cloudName;  // für den QR-Code: welcher Dienst, welcher Ordner
     g.syncPkg = pkg;
     g.syncParent = parent;
     g.syncShowQr = true;
@@ -7058,6 +7148,7 @@ static void Activate(int hitIdx, bool right) {
                 Music_SyncSetup(g.hwnd, Music_Folder());
             } else {
                 CloudSet(0, L"");
+                CloudWaitStop();  // von Hand gestartet: nicht mehr automatisch warten
                 SyncSetupFlow();
             }
             Refresh();
@@ -7642,6 +7733,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 if (g.onlyRunning) SortAppSizes();
                 Refresh();
             }
+        } else if (wp == T_CLOUDWAIT) {  // wartet auf die Anmeldung im Cloud-Programm
+            CloudWaitTick();
         } else if (wp == T_CHATFREE) {  // 10 s nach dem Schließen nicht wieder geöffnet: Claude-Webansicht beenden (gibt den Speicher frei)
             KillTimer(hwnd, T_CHATFREE);
             if (!g.open) { Chat_Free(); TrimMemory(); }
@@ -8092,6 +8185,20 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return TRUE;
     }
     case WM_APP_CLOUD:  // Cloud-Programm: Installation beendet / Fortschritt
+        {
+            int cs;
+            {
+                std::lock_guard<std::mutex> lk(sCloudMu);
+                cs = sCloudState;
+            }
+            if (cs == 2 && !sCloudName.empty() && sCloudWait.empty()) {  // installiert: starten, auf die Anmeldung warten, dann automatisch weiter
+                bool started = LaunchCloudApp(CloudLaunchKeyword(sCloudName));
+                Log(std::wstring(L"Cloud-Programm gestartet: ") + sCloudName + (started ? L"" : L" (Verknüpfung nicht gefunden)"));
+                CloudSet(2, sCloudName + (started ? L" ist installiert und gestartet. " : L" ist installiert. Starte es bitte selbst. ") +
+                                L"Melde dich dort an – HoverBar macht danach automatisch mit dem Einrichten weiter.");
+                CloudWaitStart(sCloudName);
+            }
+        }
         if (g.open && !g.closing && g.view == View::Settings) Render();
         return 0;
     case WM_APP_UPDATE:  // HoverBar-Update: neuer Stand
@@ -8620,6 +8727,21 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmd, int) {
                 }
             }
             for (auto& u : setupUrls) fprintf(fp, "U:%s\n", u.c_str());
+            fclose(fp);
+        }
+        return 0;
+    }
+    if (cmd && wcsstr(cmd, L"--cloudtest ")) {  // Test: erkannte Cloud-Dienste und ihre Startmenü-Verknüpfung auflisten (startet nichts)
+        std::wstring outFile = wcsstr(cmd, L"--cloudtest ") + 12;
+        outFile.erase(std::remove(outFile.begin(), outFile.end(), L'"'), outFile.end());
+        FILE* fp = _wfopen(outFile.c_str(), L"wb");
+        if (fp) {
+            for (auto& c : ListClouds()) {
+                std::wstring lnk;
+                LaunchCloudApp(CloudLaunchKeyword(c.name), false, &lnk);
+                fprintf(fp, "%s | winget=%s | android=%s | Ordner=%s | Startmenue=%s\n", Utf8Of(c.name).c_str(), Utf8Of(c.wingetId).c_str(), Utf8Of(c.androidPkg).c_str(),
+                        c.base.empty() ? "-" : Utf8Of(c.base).c_str(), lnk.empty() ? "-" : Utf8Of(lnk).c_str());
+            }
             fclose(fp);
         }
         return 0;
