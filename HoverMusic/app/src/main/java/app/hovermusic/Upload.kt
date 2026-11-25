@@ -3,6 +3,7 @@ package app.hovermusic
 import android.content.Context
 import android.net.Uri
 import android.provider.DocumentsContract
+import org.json.JSONObject
 import java.io.File
 
 /**
@@ -17,10 +18,19 @@ object Upload {
         return name.replace(Regex("""[\\/:*?"<>|\u0000-\u001f]"""), " ").trim().take(100).trim() + " " + marker(s.id) + ".m4a"
     }
 
-    /** Jeden Song nur einmal: wer ihn am PC löscht, bekommt ihn nicht zurück. */
+    /**
+     * Merker je Download, nicht je Video: "epoch" ist der Zeitpunkt, zu dem yt-dlp den Song geholt hat.
+     * Neu geladen (nach dem Löschen) wird also wieder hochgeladen.
+     */
+    private fun key(ctx: Context, s: Song): String {
+        val info = File(Downloader.dir(ctx), s.id.removePrefix("yt:") + ".info.json")
+        return s.id + "@" + runCatching { JSONObject(info.readText()).optLong("epoch") }.getOrDefault(0L)
+    }
+
+    /** Jeden Download nur einmal: wer ihn am PC löscht, bekommt ihn nicht zurück. */
     fun pending(ctx: Context, local: List<Song>, cloud: Library): List<Song> {
         val done = ctx.getSharedPreferences("upload", Context.MODE_PRIVATE)
-        return local.filter { s -> !done.getBoolean(s.id, false) && cloud.songs.none { marker(s.id) in it.file } }
+        return local.filter { s -> !done.getBoolean(key(ctx, s), false) && cloud.songs.none { marker(s.id) in it.file } }
     }
 
     fun upload(ctx: Context, tree: Uri, folderId: String, s: Song) {
@@ -51,6 +61,6 @@ object Upload {
             write(coverDir, file.removeSuffix(".m4a") + "." + cover.extension, cover)
         }
         write(folderId, file, audio)
-        ctx.getSharedPreferences("upload", Context.MODE_PRIVATE).edit().putBoolean(s.id, true).apply()
+        ctx.getSharedPreferences("upload", Context.MODE_PRIVATE).edit().putBoolean(key(ctx, s), true).apply()
     }
 }
