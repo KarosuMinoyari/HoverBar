@@ -16,8 +16,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.RangeSlider
-import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Button
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -42,23 +41,23 @@ import org.json.JSONObject
 import java.io.File
 
 /** Eine Zeile in HoverMusic-Aenderungen.txt; HoverBar am PC übernimmt sie und löscht die Datei. */
-data class Edit(val id: String, val title: String, val artist: String, val cover: String, val fromMs: Long = 0, val toMs: Long = 0)
+data class Edit(val id: String, val title: String, val artist: String, val cover: String, val cuts: String = "")
 
 object Edits {
     const val FILE_NAME = "HoverMusic-Aenderungen.txt"
 
     fun parse(text: String): Map<String, Edit> =
         text.lineSequence().map { it.trimEnd('\r').split('\t') }.filter { it.size >= 4 }
-            .associate { it[0] to Edit(it[0], it[1], it[2], it[3], it.getOrNull(4)?.toLongOrNull() ?: 0, it.getOrNull(5)?.toLongOrNull() ?: 0) }
+            .associate { it[0] to Edit(it[0], it[1], it[2], it[3], it.getOrNull(4) ?: "") }
 
     /** Neue Änderung dazunehmen; ein früheres Cover desselben Songs bleibt, wenn kein neues kommt. */
-    fun merge(text: String, e: Edit, keepTrim: Boolean = false): String {
+    fun merge(text: String, e: Edit, keepCuts: Boolean = false): String {
         val all = parse(text).toMutableMap()
         fun clean(s: String) = s.replace(Regex("[\\t\\r\\n]"), " ").trim()
         val old = all[e.id]
-        val trim = if (keepTrim) old else e
-        all[e.id] = Edit(e.id, clean(e.title), clean(e.artist), e.cover.ifEmpty { old?.cover ?: "" }, trim?.fromMs ?: 0, trim?.toMs ?: 0)
-        return all.values.joinToString("") { "${it.id}\t${it.title}\t${it.artist}\t${it.cover}\t${it.fromMs}\t${it.toMs}\n" }
+        val cuts = if (keepCuts) old?.cuts ?: "" else e.cuts
+        all[e.id] = Edit(e.id, clean(e.title), clean(e.artist), e.cover.ifEmpty { old?.cover ?: "" }, cuts)
+        return all.values.joinToString("") { "${it.id}\t${it.title}\t${it.artist}\t${it.cover}\t${it.cuts}\n" }
     }
 
     private fun child(ctx: Context, tree: Uri, parent: String, name: String): Uri? {
@@ -80,8 +79,8 @@ object Edits {
         ctx.contentResolver.openOutputStream(uri, "wt")?.use { it.write(bytes) } ?: error("Nicht beschreibbar")
     }
 
-    /** Änderung eines PC-Songs in den Cloud-Ordner schreiben. [folderId] = Ordner mit der Bibliotheksdatei. [trim] null = Schnitt unverändert. */
-    fun saveToCloud(ctx: Context, tree: Uri, folderId: String, id: String, title: String, artist: String, newCover: Uri?, trim: Pair<Long, Long>?) {
+    /** Änderung eines PC-Songs in den Cloud-Ordner schreiben. [folderId] = Ordner mit der Bibliotheksdatei. [cuts] null = Schnitt unverändert. */
+    fun saveToCloud(ctx: Context, tree: Uri, folderId: String, id: String, title: String, artist: String, newCover: Uri?, cuts: String?) {
         var cover = ""
         if (newCover != null) {
             val bytes = ctx.contentResolver.openInputStream(newCover)?.use { it.readBytes() } ?: error("Bild nicht lesbar")
@@ -94,18 +93,18 @@ object Edits {
         val text = old?.let { u -> ctx.contentResolver.openInputStream(u)?.use { it.readBytes().toString(Charsets.UTF_8) } } ?: ""
         // octet-stream: sonst hängen manche Anbieter eine zweite Endung an
         val target = old ?: create(ctx, tree, folderId, "application/octet-stream", FILE_NAME)
-        val edit = Edit(id, title, artist, cover, trim?.first ?: 0, trim?.second ?: 0)
-        write(ctx, target, merge(text, edit, keepTrim = trim == null).toByteArray(Charsets.UTF_8))
+        val edit = Edit(id, title, artist, cover, cuts ?: "")
+        write(ctx, target, merge(text, edit, keepCuts = cuts == null).toByteArray(Charsets.UTF_8))
     }
 
     /** Änderung eines auf dem Handy geladenen Songs. */
-    fun saveLocal(ctx: Context, id: String, title: String, artist: String, newCover: Uri?, trim: Pair<Long, Long>?) {
+    fun saveLocal(ctx: Context, id: String, title: String, artist: String, newCover: Uri?, cuts: String?) {
         val dir = Downloader.dir(ctx)
         val key = id.removePrefix("yt:")
         val info = File(dir, "$key.info.json")
         val o = JSONObject(info.readText())
         o.put("track", title).put("artist", artist)
-        if (trim != null) o.put("hm_from", trim.first).put("hm_to", trim.second)
+        if (cuts != null) o.put("hm_cuts", cuts)
         info.writeText(o.toString())
         if (newCover != null) {
             val bytes = ctx.contentResolver.openInputStream(newCover)?.use { it.readBytes() } ?: error("Bild nicht lesbar")
@@ -115,7 +114,6 @@ object Edits {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun EditDialog(vm: MusicViewModel, song: Song, onClose: () -> Unit) {
     var title by remember(song.id) { mutableStateOf(song.title) }
@@ -125,10 +123,9 @@ fun EditDialog(vm: MusicViewModel, song: Song, onClose: () -> Unit) {
     val scope = rememberCoroutineScope()
     var found by remember(song.id) { mutableStateOf<List<String>>(emptyList()) }
     var searchText by remember(song.id) { mutableStateOf<String?>(null) }
-    // Schnitt in Sekunden
-    val length = song.durationSec.toFloat()
-    val start = song.trimFromMs / 1000f..(if (song.trimToMs > 0) song.trimToMs / 1000f else length)
-    var range by remember(song.id) { mutableStateOf(start) }
+    var cuts by remember(song.id) { mutableStateOf(song.cuts) }
+    var cutting by remember(song.id) { mutableStateOf(false) }
+    if (cutting) CutScreen(song, cuts, onDone = { cuts = it; cutting = false }, onCancel = { cutting = false })
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { cover = it }
     AlertDialog(
         onDismissRequest = onClose,
@@ -160,9 +157,9 @@ fun EditDialog(vm: MusicViewModel, song: Song, onClose: () -> Unit) {
                     )
                     repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
                 }
-                if (length > 1) {
-                    Text("Schneiden: ${fmtTime((range.start * 1000).toLong())} – ${fmtTime((range.endInclusive * 1000).toLong())}")
-                    RangeSlider(range, { if (it.endInclusive - it.start >= 1f) range = it }, valueRange = 0f..length)
+                if (song.uri != null) {
+                    Button(onClick = { vm.pause(); cutting = true }, modifier = Modifier.fillMaxWidth()) { Text("Audio schneiden") }
+                    if (cuts != song.cuts) Text("Schnitt wird mit „Speichern“ übernommen.", fontSize = 12.sp)
                     if (!song.id.startsWith("yt:")) Text("Am PC schneidet HoverBar die Datei beim nächsten Öffnen (dort rückgängig machbar).", fontSize = 12.sp)
                 }
             }
@@ -170,9 +167,7 @@ fun EditDialog(vm: MusicViewModel, song: Song, onClose: () -> Unit) {
         confirmButton = {
             TextButton(onClick = {
                 if (title.isBlank()) return@TextButton
-                val full = range.start < 0.5f && range.endInclusive > length - 0.5f
-                val trim = if (range == start) null else if (full) 0L to 0L else (range.start * 1000).toLong() to (range.endInclusive * 1000).toLong()
-                vm.editSong(song, title, artist, cover, trim)
+                vm.editSong(song, title, artist, cover, cuts.takeIf { it != song.cuts })
                 onClose()
             }) { Text("Speichern") }
         },

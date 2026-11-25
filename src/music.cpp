@@ -1873,7 +1873,7 @@ bool Music_ExportLibrary() {
 }
 std::wstring Music_SyncInfo() { return g_syncInfo; }
 
-// Zeilen: Song-ID <Tab> Titel <Tab> Künstler <Tab> Cover ("Cover/Name" oder leer) [<Tab> Schnitt von <Tab> bis, in ms, 0 0 = keiner]. Die Datei kommt aus der Cloud, also prüfen.
+// Zeilen: Song-ID <Tab> Titel <Tab> Künstler <Tab> Cover ("Cover/Name" oder leer) [<Tab> Schnitte, siehe unten]. Die Datei kommt aus der Cloud, also prüfen.
 bool Music_ImportEdits() {
     if (!g_syncExport) return false;
     std::wstring dir = Music_Folder(), file = dir + L"\\HoverMusic-Aenderungen.txt";
@@ -1907,9 +1907,28 @@ bool Music_ImportEdits() {
         }
         Music_UpdateMeta(f[0], f[1], f[2]);
         changed = true;
-        double from = f.size() >= 6 ? _wtoi(f[4].c_str()) / 1000.0 : 0, to = f.size() >= 6 ? _wtoi(f[5].c_str()) / 1000.0 : 0;
-        // erst als letztes schneiden: eine Zeile bleibt nur dann liegen, wenn noch nichts geschnitten wurde (sonst doppelt)
-        if (from >= 0 && to > from + 0.5 && !Music_Trim(f[0], from, to, true)) waiting += line + "\n";
+        // Spalte 5: entfernte Bereiche "von-bis" in ms (Schritte mit ";", Bereiche mit ","), bezogen auf die ungeschnittene Datei
+        std::vector<std::pair<int, int>> cut;
+        for (size_t p = 0; f.size() >= 5 && p < f[4].size();) {
+            size_t e = f[4].find_first_of(L";,", p);
+            if (e == std::wstring::npos) e = f[4].size();
+            int x = 0, y = 0;
+            if (swscanf_s(f[4].substr(p, e - p).c_str(), L"%d-%d", &x, &y) == 2 && x >= 0 && y > x) cut.push_back({x, y});
+            p = e + 1;
+        }
+        std::sort(cut.begin(), cut.end());
+        std::vector<std::pair<int, int>> merged;
+        for (auto& r : cut) {
+            if (!merged.empty() && r.first <= merged.back().second) merged.back().second = std::max(merged.back().second, r.second);
+            else merged.push_back(r);
+        }
+        // von hinten schneiden, damit die vorderen Zeiten gültig bleiben; was nicht geht, bleibt in der Datei (nichts doppelt)
+        while (!merged.empty() && Music_Trim(f[0], merged.back().first / 1000.0, merged.back().second / 1000.0, false)) merged.pop_back();
+        if (!merged.empty()) {
+            std::wstring rest;
+            for (auto& r : merged) rest += (rest.empty() ? L"" : L",") + std::to_wstring(r.first) + L"-" + std::to_wstring(r.second);
+            waiting += ToUtf8(f[0] + L"\t" + f[1] + L"\t" + f[2] + L"\t\t" + rest) + "\n";
+        }
     }
     if (waiting.empty()) DeleteFileW(file.c_str());
     else {

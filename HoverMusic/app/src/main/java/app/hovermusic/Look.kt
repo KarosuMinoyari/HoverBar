@@ -158,12 +158,15 @@ fun SettingsScreen(vm: MusicViewModel, onClose: () -> Unit, onPickFolder: () -> 
         val update by Updater.available.collectAsState()
         updateText?.let { Text(it, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
         val u = update
-        if (u == null) TextButton(onClick = { Updater.check(ctx) }) { Text("Nach Updates suchen") }
+        val toolText by Downloader.status.collectAsState()
+        val tool by Downloader.toolVersion.collectAsState()
+        Text(toolText ?: "yt-dlp: ${tool ?: "noch nicht geladen"}", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        // ein Knopf für beides: neue HoverMusic-Version suchen und yt-dlp aktualisieren
+        if (u == null) TextButton(onClick = { Updater.check(ctx); Downloader.prepare(ctx, update = true) }) { Text("Nach Updates suchen") }
         else TextButton(onClick = { Updater.install(ctx, u) }) { Text("Version ${u.version} installieren") }
 
         Head("Musik")
         TextButton(onClick = onPickFolder) { Text("Musikordner wählen") }
-        TextButton(onClick = { Downloader.prepare(ctx, update = true) }) { Text("yt-dlp aktualisieren") }
         Text(
             "Mit einer Hand laden:\n• In YouTube auf „Teilen“, dann oben auf „Song laden“ (HoverMusic). Du bleibst in YouTube.\n" +
                 "• Oder „Link kopieren“ und in den Schnelleinstellungen die Kachel „Song laden“ antippen (einmal über den Stift hinzufügen).",

@@ -1,5 +1,7 @@
 package app.hovermusic
 
+import android.os.Handler
+import android.os.Looper
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
@@ -29,6 +31,30 @@ class PlaybackService : MediaSessionService() {
             }
         })
         session = MediaSession.Builder(this, player).build()
+        // Schnitte: entfernte Bereiche beim Abspielen überspringen (die Datei bleibt unverändert)
+        handler.post(object : Runnable {
+            override fun run() {
+                skipCuts(player)
+                handler.postDelayed(this, 100)
+            }
+        })
+    }
+
+    private val handler = Handler(Looper.getMainLooper())
+
+    private fun skipCuts(p: Player) {
+        if (!p.isPlaying) return
+        val cuts = p.currentMediaItem?.mediaMetadata?.extras?.getString("cuts").orEmpty()
+        if (cuts.isEmpty()) return
+        val pos = p.currentPosition
+        val r = Cuts.removed(cuts).firstOrNull { pos >= it.first && pos < it.last - 50 } ?: return
+        if (p.duration <= 0 || r.last < p.duration - 300) p.seekTo(r.last)
+        else if (p.repeatMode == Player.REPEAT_MODE_ONE) p.seekTo(0)
+        else if (p.hasNextMediaItem()) p.seekToNextMediaItem()
+        else {
+            p.pause()
+            p.seekTo(0)
+        }
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
@@ -39,6 +65,7 @@ class PlaybackService : MediaSessionService() {
     }
 
     override fun onDestroy() {
+        handler.removeCallbacksAndMessages(null)
         session?.run {
             player.release()
             release()

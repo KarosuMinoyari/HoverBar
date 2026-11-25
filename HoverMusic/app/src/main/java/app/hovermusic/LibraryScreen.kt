@@ -34,7 +34,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -105,6 +104,7 @@ fun LibraryScreen(vm: MusicViewModel, onOpenNow: () -> Unit, onSettings: () -> U
             Tile("Playlists", HmIcons.Note, Color(0xFFB48CFF), tab == 2, cover(library?.playlists?.lastOrNull()?.songIds?.lastOrNull()), Modifier.weight(1f)) { toggle(2) }
             Tile("Zuletzt", HmIcons.Refresh, Color(0xFF5ED6B0), tab == 3, cover(recent.firstOrNull()), Modifier.weight(1f)) { toggle(3) }
         }
+        Spacer(Modifier.height(10.dp))
         if (loading) LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp))
         download?.let {
             Text(
@@ -155,14 +155,12 @@ fun LibraryScreen(vm: MusicViewModel, onOpenNow: () -> Unit, onSettings: () -> U
     }
 
     if (showHelp) {
-        val ctx = LocalContext.current
         val tool by Downloader.toolVersion.collectAsState()
         AlertDialog(
             onDismissRequest = { showHelp = false },
             title = { Text("Von YouTube laden") },
             text = { Text("Öffne das Video in YouTube, tippe auf „Teilen“ und wähle HoverMusic. Der Song landet auf diesem Handy.\n\nyt-dlp: ${tool ?: "noch nicht geladen"}") },
             confirmButton = { TextButton(onClick = { showHelp = false }) { Text("OK") } },
-            dismissButton = { TextButton(onClick = { showHelp = false; Downloader.prepare(ctx, update = true) }) { Text("yt-dlp aktualisieren") } },
         )
     }
 }

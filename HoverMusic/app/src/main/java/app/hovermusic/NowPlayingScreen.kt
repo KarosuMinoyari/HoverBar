@@ -26,6 +26,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -51,6 +52,7 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 
 /** "Läuft gerade": oben Cover und Songtext zum Wischen, unten Titel, Fortschritt und Steuerung. */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun NowPlayingScreen(vm: MusicViewModel, onClose: () -> Unit) {
     val library by vm.library.collectAsState()
@@ -85,13 +87,11 @@ fun NowPlayingScreen(vm: MusicViewModel, onClose: () -> Unit) {
         }
         // oben: wischen zwischen Cover (Seite 1) und Songtext (Seite 2)
         val pager = rememberPagerState { 2 }
-        // die Datei ist ungeschnitten: Zeitstempel im Songtext um den Schnitt verschieben
-        val cut = song?.trimFromMs ?: 0
         HorizontalPager(pager, Modifier.weight(1f).fillMaxWidth()) { page ->
             if (page == 0) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Cover(song, null, Modifier.aspectRatio(1f), radius = 22) }
             } else {
-                LyricsView(lyrics, pos + cut, hasFile = song?.lyricsUri != null, onSeek = { vm.seekTo((it - cut).coerceAtLeast(0)) }, modifier = Modifier.fillMaxSize())
+                LyricsView(lyrics, pos, hasFile = song?.lyricsUri != null, onSeek = { vm.seekTo(it) }, modifier = Modifier.fillMaxSize())
             }
         }
         Row(Modifier.padding(vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -104,25 +104,15 @@ fun NowPlayingScreen(vm: MusicViewModel, onClose: () -> Unit) {
         Text(song?.title ?: "Nichts läuft", fontSize = 22.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center)
         Text(song?.artist ?: "", fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
         Spacer(Modifier.height(8.dp))
-        // Fortschritt
-        var drag by remember { mutableStateOf<Float?>(null) }
-        val frac = drag ?: if (dur > 0) (pos.toFloat() / dur).coerceIn(0f, 1f) else 0f
-        Slider(
-            value = frac,
-            onValueChange = { drag = it },
-            onValueChangeFinished = {
-                drag?.let { vm.seekTo((it * dur).toLong()) }
-                drag = null
-            },
-            modifier = Modifier.fillMaxWidth(),
-        )
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text(fmtTime((frac * dur).toLong()), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Text(if (dur > 0) fmtTime(dur) else "–", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-
-        // Steuerung: links Zufall/Wiederholen, mittig Zurück/Play/Weiter, rechts Herz
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+        // Herz links, Zufall/Wiederholen rechts, darunter der Fortschritt
+        Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+            IconButton(onClick = { id?.let { vm.toggleFavorite(it) } }) {
+                val fav = id != null && id in favorites
+                Icon(
+                    if (fav) HmIcons.Heart else HmIcons.HeartOutline, "Favorit",
+                    tint = if (fav) Color(0xFFFF5A78) else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             IconButton(onClick = { vm.cycleMode() }) {
                 val active = mode != PlayMode.Off
                 Icon(
@@ -131,23 +121,43 @@ fun NowPlayingScreen(vm: MusicViewModel, onClose: () -> Unit) {
                     tint = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = { vm.previous() }, modifier = Modifier.size(52.dp)) { Icon(HmIcons.Previous, "Zurück", Modifier.size(32.dp)) }
-                IconButton(
-                    onClick = { vm.togglePlay() },
-                    modifier = Modifier.size(68.dp).clip(CircleShape).background(Color(0xFFEDEDF2)),
-                ) { Icon(if (playing) HmIcons.Pause else HmIcons.Play, if (playing) "Pause" else "Play", Modifier.size(36.dp), tint = Color(0xFF14141A)) }
-                IconButton(onClick = { vm.next() }, modifier = Modifier.size(52.dp)) { Icon(HmIcons.Next, "Weiter", Modifier.size(32.dp)) }
-            }
-            IconButton(onClick = { id?.let { vm.toggleFavorite(it) } }) {
-                val fav = id != null && id in favorites
-                Icon(
-                    if (fav) HmIcons.Heart else HmIcons.HeartOutline, "Favorit",
-                    tint = if (fav) Color(0xFFFF5A78) else MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
         }
-        Spacer(Modifier.height(16.dp))
+
+        // Fortschritt (Zeiten ohne die herausgeschnittenen Stellen)
+        var drag by remember { mutableStateOf<Float?>(null) }
+        val cuts = song?.cuts.orEmpty()
+        val total = if (dur > 0) Cuts.kept(cuts, dur) else 0
+        val frac = drag ?: if (total > 0) (Cuts.visible(cuts, pos).toFloat() / total).coerceIn(0f, 1f) else 0f
+        Slider(
+            value = frac,
+            onValueChange = { drag = it },
+            onValueChangeFinished = {
+                drag?.let { vm.seekTo(Cuts.original(cuts, (it * total).toLong())) }
+                drag = null
+            },
+            modifier = Modifier.fillMaxWidth(),
+            thumb = { Box(Modifier.padding(top = 3.dp).size(14.dp).clip(CircleShape).background(MaterialTheme.colorScheme.onBackground)) },
+            track = {
+                Box(Modifier.fillMaxWidth().height(3.dp).clip(CircleShape).background(MaterialTheme.colorScheme.onBackground.copy(alpha = 0.22f))) {
+                    Box(Modifier.fillMaxWidth(frac).height(3.dp).background(MaterialTheme.colorScheme.primary))
+                }
+            },
+        )
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(fmtTime((frac * total).toLong()), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(if (total > 0) fmtTime(total) else "–", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+
+        // Steuerung: Zurück/Play/Weiter
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = { vm.previous() }, modifier = Modifier.size(52.dp)) { Icon(HmIcons.Previous, "Zurück", Modifier.size(32.dp)) }
+            IconButton(
+                onClick = { vm.togglePlay() },
+                modifier = Modifier.size(68.dp).clip(CircleShape).background(Color(0xFFEDEDF2)),
+            ) { Icon(if (playing) HmIcons.Pause else HmIcons.Play, if (playing) "Pause" else "Play", Modifier.size(36.dp), tint = Color(0xFF14141A)) }
+            IconButton(onClick = { vm.next() }, modifier = Modifier.size(52.dp)) { Icon(HmIcons.Next, "Weiter", Modifier.size(32.dp)) }
+        }
+        Spacer(Modifier.height(79.dp))  // Bedienung etwa 1 cm höher
     }
     }
 }

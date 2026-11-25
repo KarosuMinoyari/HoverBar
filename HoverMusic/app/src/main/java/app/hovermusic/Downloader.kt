@@ -17,7 +17,7 @@ import kotlinx.coroutines.sync.withLock
 import org.json.JSONObject
 import java.io.File
 
-data class SongInfo(val id: String, val title: String, val artist: String, val durationSec: Int, val fromMs: Long = 0, val toMs: Long = 0)
+data class SongInfo(val id: String, val title: String, val artist: String, val durationSec: Int, val cuts: String = "")
 
 /**
  * yt-dlp auf dem Handy: holt die Tonspur (m4a, ohne Umwandeln) in den App-Ordner "music".
@@ -45,7 +45,7 @@ object Downloader {
     fun parseInfo(json: String): SongInfo {
         val o = JSONObject(json)
         val artist = o.optString("artist").ifEmpty { o.optString("uploader") }.removeSuffix(" - Topic")
-        return SongInfo(o.getString("id"), o.optString("track").ifEmpty { o.optString("title") }, artist, o.optInt("duration"), o.optLong("hm_from"), o.optLong("hm_to"))
+        return SongInfo(o.getString("id"), o.optString("track").ifEmpty { o.optString("title") }, artist, o.optInt("duration"), o.optString("hm_cuts"))
     }
 
     /** Von yt-dlp geladene Songs (eine .info.json je Song). */
@@ -57,7 +57,7 @@ object Downloader {
                 val audio = File(f.parentFile, "${i.id}.m4a")
                 if (!audio.exists()) return@mapNotNull null
                 val cover = listOf("jpg", "webp", "png").map { File(f.parentFile, "${i.id}.$it") }.firstOrNull { it.exists() }
-                Song("yt:${i.id}", audio.name, i.title, i.artist, i.durationSec, Uri.fromFile(audio), cover?.let { Uri.fromFile(it) }, null, trimFromMs = i.fromMs, trimToMs = i.toMs)
+                Song("yt:${i.id}", audio.name, i.title, i.artist, i.durationSec, Uri.fromFile(audio), cover?.let { Uri.fromFile(it) }, null, cuts = i.cuts)
             }.getOrNull()
         }
     }
