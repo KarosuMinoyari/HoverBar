@@ -43,7 +43,10 @@ Eigener Player für die Songs im Musikordner (Standard `Musik\HoverBar`, änderb
 - **Läuft gerade:** Großes Cover, Steuerung, Songtext (aus einer `.lrc`-Datei neben dem Song oder von lrclib.net, dabei werden Titel und Künstler übertragen). Mit dem Mausrad im Text suchen, Klick springt dorthin; nach 2 s geht es zurück zur aktuellen Zeile. Nach unten scrollen klappt die Ansicht in die Bibliothek ein. Rechtsklick aufs Cover: Song bearbeiten.
 - **Song schneiden:** Rechtsklick → *Bearbeiten / Schneiden*. Linien für Anfang und Ende (auf die Millisekunde), Wellenform, Rückgängig, „Auswahl entfernen“. Verlustfrei.
 - **Tasten:** Ende halten + Pos1 = Play/Pause, Bild ab = weiter, Bild auf = zurück, „+“/„−“ = Lautstärke. Steuern nur den eigenen Player.
-- **Meistgespielt:** Der Knopf neben  Spielt ein Browser oder Video-Player Ton, wird die Musik auf 10 % abgesenkt.
+- **Meistgespielt:** Der Knopf neben „Alle abspielen“ sortiert „Alle Songs“ nach Titel oder nach Anzahl der Wiedergaben.
+- **Leiser bei Videos:** Spielt ein Browser oder Video-Player Ton, wird die Musik auf 10 % abgesenkt.
+- **Tastatur:** Pfeiltasten wandern durch die Leiste, Enter aktiviert, die Menü-Taste ist der Rechtsklick. Während du tippst, gehören links/rechts dem Textfeld.
+- **Grafik:** Cover in den drei Musik-Kacheln und feine Trennlinien, beides unter Design abschaltbar.
 - Alles lässt sich unter Funktionen abschalten (Hauptschalter „Musik-Player“), auch zu Spotify wechseln.
 
 ## Musik-Sync (Erweiterung: Musik aufs Handy)
@@ -57,7 +60,7 @@ Optional unter Zahnrad → Vorgeschlagen → *Musik-Sync*. Legt deine Songs, Cov
 ```json
 {
   "format": "HoverBar-Bibliothek", "version": 1, "updated": "2026-11-25T12:30:00",
-  "songs": [ {"id":"…","file":"Name.mp3","title":"…","artist":"…","duration":156,"plays":3,"cover":"Cover/….jpg","lyrics":"Name.lrc","url":"https://…"} ],
+  "songs": [ {"id":"…","file":"Name.mp3","title":"…","artist":"…","duration":156,"plays":3,"cover":"Cover/….jpg","lyrics":"Songtexte/Name.lrc","url":"https://…"} ],
   "playlists": [ {"name":"…","songs":["id", …]} ],
   "favorites": ["id", …]
 }
@@ -65,6 +68,7 @@ Optional unter Zahnrad → Vorgeschlagen → *Musik-Sync*. Legt deine Songs, Cov
 
 `file` und `cover` sind relativ zum Ordner. Aufgeführt werden nur Songs, die wirklich im Ordner liegen.
 - **Handy verbinden (QR-Code):** Nach dem Einrichten (und jederzeit über den Knopf „Handy verbinden“) zeigt HoverBar einen QR-Code. Er enthält einen Link auf die HoverMusic-Downloadseite (die normale Handy-Kamera führt also zur App) und dahinter, nach `#hm=`, die Einrichtung als Base64-JSON: `{"v":1,"cloud":"MEGA","folder":"HoverBar-Musik","pkg":"<Android-Paket der Cloud-App>","parent":"<Ordner davor>"}`. Keine Zugangsdaten und keine Pfade vom PC. HoverMusic liest den Code und führt durch die Cloud-App und die Ordnerwahl.
+- **Ordner:** Songtexte liegen in `Songtexte/`, Cover in `Cover/`. Änderungen vom Handy (`HoverMusic-Aenderungen.txt`) übernimmt HoverBar beim nächsten Öffnen.
 - **Ausschalten:** Die Songs bleiben im Cloud-Ordner, nur die Bibliotheksdatei wird nicht mehr gepflegt.
 - **Tests:** `HoverBar.exe --musiksync <Ordner>` richtet den Sync ohne Rückfragen in einem beliebigen Ordner ein, `--musiksync-aus` schaltet ihn ab (bei laufender HoverBar). `--qrtest <Datei>` schreibt QR-Beispiele (HoverMusic dekodiert sie in den Unit-Tests mit ZXing), `--qrfenster` zeigt das QR-Fenster mit Beispieldaten.
 
@@ -75,7 +79,11 @@ Eigene App im Ordner `HoverMusic/` (Kotlin, Jetpack Compose, Media3), mit eigene
 - **Einrichten:** In HoverBar am PC *Musik-Sync* einrichten, am Ende erscheint der QR-Code. In HoverMusic „QR-Code scannen“ (nutzt den Code-Scanner der Google Play-Dienste, ohne Kamera-Berechtigung; alternativ „Link aus der Zwischenablage“): Die App führt durch die Installation der Cloud-App auf dem Handy und die Wahl des Ordners `HoverBar-Musik` (Android-Ordnerauswahl: Google Drive, OneDrive, MEGA, Koofr … erscheinen dort). Es werden keine Zugangsdaten und keine Cloud-Schnittstellen gebraucht, die App liest nur diesen Ordner.
 - **Funktionen:** Alle Songs, Favoriten, Playlists, Zuletzt gespielt; „Läuft gerade“ mit großem Cover, Fortschritt, Zurück/Play/Weiter, Zufall/Wiederholen (jeder Klick wechselt: aus → Zufall → Playlist wiederholen → Song wiederholen), Herz; Songtext mit Mitscrollen (Tippen auf eine Zeile springt dorthin, nach 2 s geht es zur aktuellen Zeile zurück); Wiedergabe im Hintergrund mit Steuerung in der Benachrichtigung und auf dem Sperrbildschirm.
 - **Von YouTube laden:** In YouTube auf *Teilen* → HoverMusic. yt-dlp wird beim ersten Start in der neuesten Version geholt (Aktualisieren über das Download-Symbol). Diese Songs bleiben auf dem Handy, nicht im Cloud-Ordner.
-- **Meistgespielt:**  liegen lokal auf dem Handy (die Favoriten vom PC werden einmal übernommen). Die Bibliothek wird beim Start und über den Aktualisieren-Knopf neu gelesen und für den Start ohne Netz zwischengespeichert. Die Songs selbst streamt oder lädt der Cloud-Anbieter beim Abspielen; wer sie offline braucht, markiert den Ordner im Cloud-App als „offline verfügbar“.
+- **Meistgespielt:** „Alle Songs“ lässt sich nach Wiedergaben sortieren (Zahl vom PC plus die auf dem Handy).
+- **Bearbeiten:** Song lange drücken oder Stift in „Läuft gerade“ (Titel, Künstler, Cover). Braucht Schreibrecht: bei älterer Einrichtung den Ordner neu wählen.
+- **Einstellungen:** Farbe, Hintergrundbild, Glas-Effekt, Schrift, Ausfahren und die Grafik-Extras.
+- **Einhändig laden:** Direktziel „Song laden“ im Teilen-Menü oder die gleichnamige Kachel in den Schnelleinstellungen (kopierter Link).
+- **Favoriten und „Zuletzt“** liegen lokal auf dem Handy (die Favoriten vom PC werden einmal übernommen). Die Bibliothek wird beim Start und über den Aktualisieren-Knopf neu gelesen und für den Start ohne Netz zwischengespeichert. Die Songs selbst streamt oder lädt der Cloud-Anbieter beim Abspielen; wer sie offline braucht, markiert den Ordner im Cloud-App als „offline verfügbar“.
 - **Installieren:** APK aus dem Release auf dem Handy öffnen und „Installation aus dieser Quelle“ erlauben (die App ist nicht im Play Store). Voraussetzung: Android 8 oder neuer.
 - **Bauen:** JDK 17 und Android SDK (Plattform 34), dann in `HoverMusic/`: `gradlew assembleDebug` bzw. `gradlew test`. Für signierte Releases liegt eine `keystore.properties` (nicht im Repo) neben dem Projekt; `tools\release-hovermusic.ps1` baut und veröffentlicht.
 

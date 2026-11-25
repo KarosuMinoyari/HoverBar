@@ -5,6 +5,7 @@ import android.content.ComponentName
 import android.content.Intent
 import android.net.Uri
 import androidx.core.content.ContextCompat
+import androidx.compose.runtime.mutableStateOf
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.media3.common.MediaItem
@@ -25,6 +26,9 @@ class MusicViewModel(app: Application) : AndroidViewModel(app) {
     private val prefs = Prefs(app)
 
     val library = MutableStateFlow<Library?>(null)
+    val look = mutableStateOf(Look.load(app))
+    val showNow = MutableStateFlow(false)
+    private var folderId: String? = null
     private var cloud: Library? = null  // nur die Songs vom PC; library = cloud + Downloads auf dem Handy
     val sortByPlays = MutableStateFlow(prefs.sortByPlays)
     val playsTick = MutableStateFlow(0)
@@ -81,9 +85,10 @@ class MusicViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun setFolder(uri: Uri) {
-        runCatching {
-            getApplication<Application>().contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        }
+        val cr = getApplication<Application>().contentResolver
+        // Schreibrecht fürs Bearbeiten; gibt der Anbieter keins, reicht Lesen zum Abspielen
+        runCatching { cr.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION) }
+            .onFailure { runCatching { cr.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) } }
         prefs.treeUri = uri.toString()
         hasFolder.value = true
         refresh()
@@ -97,6 +102,7 @@ class MusicViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 val loaded = withContext(Dispatchers.IO) { LibraryLoader.load(getApplication(), Uri.parse(tree)) }
                 prefs.jsonCache = loaded.rawJson
+                folderId = loaded.folderId
                 cloud = loaded.library
                 publish()
                 if (!prefs.favoritesSeeded) {  // einmalig: Favoriten vom PC übernehmen
@@ -124,6 +130,27 @@ class MusicViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Wiedergaben vom PC plus die auf diesem Handy. */
     fun plays(s: Song): Int = s.pcPlays + prefs.plays(s.id)
+
+    fun setLook(l: Look) {
+        look.value = l
+        l.save(getApplication())
+    }
+
+    fun editSong(s: Song, title: String, artist: String, cover: Uri?) {
+        val ctx = getApplication<Application>()
+        viewModelScope.launch {
+            try {
+                val local = s.id.startsWith("yt:")
+                withContext(Dispatchers.IO) {
+                    if (local) Edits.saveLocal(ctx, s.id, title.trim(), artist.trim(), cover)
+                    else Edits.saveToCloud(ctx, Uri.parse(prefs.treeUri), folderId ?: error("Bibliothek zuerst aktualisieren"), s.id, title, artist, cover)
+                }
+                if (local) publish() else refresh()
+            } catch (e: Exception) {
+                error.value = "Nicht gespeichert (${e.message}). Wähle den Musikordner in den Einstellungen neu, damit die App schreiben darf."
+            }
+        }
+    }
 
     fun toggleSort() {
         sortByPlays.value = !sortByPlays.value
@@ -213,6 +240,7 @@ class MusicViewModel(app: Application) : AndroidViewModel(app) {
         c.setMediaItems(items, start, 0L)
         c.prepare()
         c.play()
+        showNow.value = true
     }
 
     fun togglePlay() {

@@ -68,15 +68,24 @@ void Music_SetFolder(const std::wstring& folder) {
     g_songFolder = folder;
     ReleaseSRWLockExclusive(&g_folderLock);
 }
-// Songtext-Datei (.lrc) neben der MP3 mitnehmen, wenn die MP3 umzieht
+// Songtexte liegen im Unterordner Songtexte neben der MP3. Eine .lrc, die noch direkt neben der MP3 liegt, wird dorthin verschoben.
+static std::wstring LrcPath(const std::wstring& mp3) {
+    size_t slash = mp3.find_last_of(L'\\'), dot = mp3.find_last_of(L'.');
+    std::wstring dir = mp3.substr(0, slash), base = mp3.substr(slash + 1, dot > slash ? dot - slash - 1 : std::wstring::npos);
+    std::wstring neu = dir + L"\\Songtexte\\" + base + L".lrc", alt = dir + L"\\" + base + L".lrc";
+    if (GetFileAttributesW(alt.c_str()) != INVALID_FILE_ATTRIBUTES && GetFileAttributesW(neu.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        CreateDirectoryW((dir + L"\\Songtexte").c_str(), nullptr);
+        if (!MoveFileExW(alt.c_str(), neu.c_str(), 0)) return alt;
+    }
+    return neu;
+}
+// Songtext-Datei mitnehmen, wenn die MP3 umzieht
 static void MoveLyricsAlong(const std::wstring& oldMp3, const std::wstring& newMp3) {
-    auto lrc = [](const std::wstring& p) {
-        size_t d = p.find_last_of(L'.');
-        return (d == std::wstring::npos ? p : p.substr(0, d)) + L".lrc";
-    };
-    std::wstring o = lrc(oldMp3), n = lrc(newMp3);
-    if (GetFileAttributesW(o.c_str()) != INVALID_FILE_ATTRIBUTES && GetFileAttributesW(n.c_str()) == INVALID_FILE_ATTRIBUTES)
+    std::wstring o = LrcPath(oldMp3), n = LrcPath(newMp3);
+    if (GetFileAttributesW(o.c_str()) != INVALID_FILE_ATTRIBUTES && GetFileAttributesW(n.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        CreateDirectoryW(n.substr(0, n.find_last_of(L'\\')).c_str(), nullptr);
         MoveFileExW(o.c_str(), n.c_str(), MOVEFILE_COPY_ALLOWED);
+    }
 }
 // vorhandene Songs in den Song-Ordner verschieben; liefert die Anzahl verschobener Dateien
 int Music_MoveSongsToFolder() {
@@ -1662,10 +1671,7 @@ static DWORD WINAPI LyricsThread(LPVOID pp) {
     auto* p = (LyricsParams*)pp;
     auto* res = new LyricsResult();
     res->songId = p->id;
-    std::wstring lrc = p->file;
-    size_t dot = lrc.find_last_of(L'.');
-    if (dot != std::wstring::npos && dot > lrc.find_last_of(L'\\')) lrc.erase(dot);
-    lrc += L".lrc";
+    std::wstring lrc = LrcPath(p->file);
     // 1) lokale .lrc-Datei
     HANDLE h = CreateFileW(lrc.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
     if (h != INVALID_HANDLE_VALUE) {
@@ -1732,6 +1738,7 @@ static DWORD WINAPI LyricsThread(LPVOID pp) {
         if (!txt.empty()) {
             ParseLrc(txt, *res);
             std::string u8 = ToUtf8(txt);  // für das nächste Mal (und offline) speichern
+            CreateDirectoryW(lrc.substr(0, lrc.find_last_of(L'\\')).c_str(), nullptr);
             HANDLE w = CreateFileW(lrc.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
             if (w != INVALID_HANDLE_VALUE) {
                 DWORD wr = 0;
@@ -1815,9 +1822,9 @@ bool Music_ExportLibrary() {
         }
         std::wstring lyrics;  // Songtext (.lrc) neben der MP3, falls vorhanden
         {
-            size_t d = s.file.find_last_of(L'.');
-            std::wstring lf = (d == std::wstring::npos ? s.file : s.file.substr(0, d)) + L".lrc";
-            if (GetFileAttributesW(lf.c_str()) != INVALID_FILE_ATTRIBUTES) lyrics = BaseNameOf(lf);
+            std::wstring lf = LrcPath(s.file);
+            if (GetFileAttributesW(lf.c_str()) != INVALID_FILE_ATTRIBUTES)
+                lyrics = (DirectlyIn(lf, dir) ? L"" : L"Songtexte/") + BaseNameOf(lf);
         }
         if (!songs.empty()) songs += ",\n";
         songs += "    {\"id\":\"" + JsonEsc(s.id) + "\",\"file\":\"" + JsonEsc(BaseNameOf(s.file)) + "\",\"title\":\"" + JsonEsc(s.title) +
@@ -1865,6 +1872,44 @@ bool Music_ExportLibrary() {
     return true;
 }
 std::wstring Music_SyncInfo() { return g_syncInfo; }
+
+// Zeilen: Song-ID <Tab> Titel <Tab> Künstler <Tab> Cover ("Cover/Name" oder leer). Die Datei kommt aus der Cloud, also prüfen.
+bool Music_ImportEdits() {
+    if (!g_syncExport) return false;
+    std::wstring dir = Music_Folder(), file = dir + L"\\HoverMusic-Aenderungen.txt";
+    HANDLE h = CreateFileW(file.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    DWORD sz = GetFileSize(h, nullptr), got = 0;
+    std::string data(sz < 1024 * 1024 ? sz : 0, '\0');
+    bool read = !data.empty() && ReadFile(h, &data[0], sz, &got, nullptr) && got == sz;
+    CloseHandle(h);
+    if (!read) return false;
+    bool changed = false, waiting = false;
+    for (size_t a = 0; a < data.size();) {
+        size_t b = data.find('\n', a);
+        if (b == std::string::npos) b = data.size();
+        std::string line = data.substr(a, b - a);
+        a = b + 1;
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        std::vector<std::wstring> f;
+        std::wstring w = FromUtf8(line);
+        for (size_t p = 0;;) {
+            size_t t = w.find(L'\t', p);
+            f.push_back(w.substr(p, t == std::wstring::npos ? std::wstring::npos : t - p));
+            if (t == std::wstring::npos) break;
+            p = t + 1;
+        }
+        if (f.size() < 4 || Music_Find(f[0]) < 0) continue;
+        Music_UpdateMeta(f[0], f[1], f[2]);
+        changed = true;
+        const std::wstring& c = f[3];
+        if (c.rfind(L"Cover/", 0) == 0 && c.find_first_of(L"/\\", 6) == std::wstring::npos && c.find(L"..") == std::wstring::npos) {
+            if (!Music_SetCoverFromFile(f[0], dir + L"\\Cover\\" + c.substr(6))) waiting = true;  // noch nicht heruntergeladen
+        }
+    }
+    if (!waiting) DeleteFileW(file.c_str());
+    return changed;
+}
 
 SyncStatus Music_SyncStatus() {
     AcquireSRWLockShared(&g_syncLock);

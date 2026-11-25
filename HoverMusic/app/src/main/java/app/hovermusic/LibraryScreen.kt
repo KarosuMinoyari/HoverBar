@@ -21,6 +21,9 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.Text
 import androidx.activity.compose.BackHandler
@@ -67,7 +70,7 @@ fun Cover(song: Song?, size: androidx.compose.ui.unit.Dp?, modifier: Modifier = 
 }
 
 @Composable
-fun LibraryScreen(vm: MusicViewModel, onOpenNow: () -> Unit, onPickFolder: () -> Unit) {
+fun LibraryScreen(vm: MusicViewModel, onOpenNow: () -> Unit, onSettings: () -> Unit, onPickFolder: () -> Unit) {
     val library by vm.library.collectAsState()
     val loading by vm.loading.collectAsState()
     val error by vm.error.collectAsState()
@@ -91,13 +94,16 @@ fun LibraryScreen(vm: MusicViewModel, onOpenNow: () -> Unit, onPickFolder: () ->
             }
             IconButton(onClick = { showHelp = true }) { Icon(HmIcons.Download, "Von YouTube laden", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
             IconButton(onClick = { vm.refresh() }) { Icon(HmIcons.Refresh, "Aktualisieren", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
-            IconButton(onClick = onPickFolder) { Icon(HmIcons.Folder, "Ordner wählen", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
+            IconButton(onClick = onSettings) { Icon(HmIcons.Gear, "Einstellungen", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
         }
         Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             fun toggle(t: Int) { tab = if (tab == t) 0 else t; openPlaylist = null }
-            Tile("Favoriten", HmIcons.Heart, Color(0xFFFF6482), tab == 1, Modifier.weight(1f)) { toggle(1) }
-            Tile("Playlists", HmIcons.Note, Color(0xFFB48CFF), tab == 2, Modifier.weight(1f)) { toggle(2) }
-            Tile("Zuletzt", HmIcons.Refresh, Color(0xFF5ED6B0), tab == 3, Modifier.weight(1f)) { toggle(3) }
+            // blass dahinter: zuletzt hinzugefügter Favorit / neueste Playlist / zuletzt gehört
+            val show = vm.look.value.tileCovers
+            fun cover(id: String?) = if (show) library?.byId?.get(id)?.coverUri else null
+            Tile("Favoriten", HmIcons.Heart, Color(0xFFFF6482), tab == 1, cover(favorites.firstOrNull()), Modifier.weight(1f)) { toggle(1) }
+            Tile("Playlists", HmIcons.Note, Color(0xFFB48CFF), tab == 2, cover(library?.playlists?.lastOrNull()?.songIds?.lastOrNull()), Modifier.weight(1f)) { toggle(2) }
+            Tile("Zuletzt", HmIcons.Refresh, Color(0xFF5ED6B0), tab == 3, cover(recent.firstOrNull()), Modifier.weight(1f)) { toggle(3) }
         }
         if (loading) LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp))
         download?.let {
@@ -162,15 +168,18 @@ fun LibraryScreen(vm: MusicViewModel, onOpenNow: () -> Unit, onPickFolder: () ->
 }
 
 @Composable
-private fun Tile(name: String, icon: ImageVector, tint: Color, selected: Boolean, modifier: Modifier, onClick: () -> Unit) {
-    Column(
+private fun Tile(name: String, icon: ImageVector, tint: Color, selected: Boolean, cover: android.net.Uri?, modifier: Modifier, onClick: () -> Unit) {
+    Box(
         modifier.clip(RoundedCornerShape(18.dp))
             .background(if (selected) tint.copy(alpha = 0.28f) else MaterialTheme.colorScheme.surface)
-            .clickable { onClick() }.padding(14.dp),
+            .clickable { onClick() },
     ) {
-        Icon(icon, null, tint = tint, modifier = Modifier.size(22.dp))
-        Spacer(Modifier.height(10.dp))
-        Text(name, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+        if (cover != null) AsyncImage(model = cover, contentDescription = null, contentScale = ContentScale.Crop, alpha = 0.35f, modifier = Modifier.matchParentSize())
+        Column(Modifier.fillMaxWidth().padding(14.dp)) {
+            Icon(icon, null, tint = tint, modifier = Modifier.size(22.dp))
+            Spacer(Modifier.height(10.dp))
+            Text(name, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+        }
     }
 }
 
@@ -194,12 +203,15 @@ private fun PlaylistList(vm: MusicViewModel, lib: Library, onOpen: (String) -> U
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun SongList(
     vm: MusicViewModel, title: String, songs: List<Song>, currentId: String?, favorites: List<String>,
     emptyText: String, sortable: Boolean = false, playsTick: Int = 0,
 ) {
     val byPlays by vm.sortByPlays.collectAsState()
+    var editing by remember { mutableStateOf<Song?>(null) }
+    editing?.let { EditDialog(vm, it) { editing = null } }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 8.dp)) {
         item {
             Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 16.dp, top = 18.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -226,7 +238,8 @@ private fun SongList(
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = 8.dp).clip(RoundedCornerShape(16.dp))
                     .background(if (playing) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f) else Color.Transparent)
-                    .clickable { vm.play(songs, i) }.padding(start = 8.dp, top = 8.dp, bottom = 8.dp),
+                    .combinedClickable(onLongClick = { editing = s }) { vm.play(songs, i) }  // lange drücken: bearbeiten
+                    .padding(start = 8.dp, top = 8.dp, bottom = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Cover(s, 56.dp, radius = 14)
@@ -249,6 +262,7 @@ private fun SongList(
                     )
                 }
             }
+            if (vm.look.value.lines && i < songs.lastIndex) HorizontalDivider(Modifier.padding(horizontal = 20.dp), color = Color.White.copy(alpha = 0.07f))
         }
     }
 }

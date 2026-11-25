@@ -509,6 +509,8 @@ struct State {
     UINT hotVk = VK_END, hotMods = 0;
     UINT grabVk = VK_END, grabMods = MOD_ALT;  // Taste für "Link laden"
     bool grabCapture = false;
+    bool tileCovers = true, songLines = true;   // Grafik: Cover in den Musik-Kacheln, Trennlinien
+    bool kbdNav = false;                        // zuletzt mit Pfeiltasten navigiert (Enter aktiviert dann die Markierung)
     bool sortPlays = false;                    // "Alle Songs" nach Wiedergaben statt Titel
     bool hotCapture = false;                     // wartet in den Einstellungen auf eine neue Taste
     // Musik-Player
@@ -624,6 +626,8 @@ static void InitIni() {
     g.grabVk = GetPrivateProfileIntW(L"Einstellungen", L"LinkTasteVk", VK_END, g.ini.c_str());
     g.grabMods = GetPrivateProfileIntW(L"Einstellungen", L"LinkTasteMods", MOD_ALT, g.ini.c_str());
     g.sortPlays = GetPrivateProfileIntW(L"Musik", L"NachWiedergaben", 0, g.ini.c_str()) != 0;
+    g.tileCovers = GetPrivateProfileIntW(L"Einstellungen", L"KachelCover", 1, g.ini.c_str()) != 0;
+    g.songLines = GetPrivateProfileIntW(L"Einstellungen", L"Trennlinien", 1, g.ini.c_str()) != 0;
     g.hotMods = GetPrivateProfileIntW(L"Einstellungen", L"TasteMods", 0, g.ini.c_str());
     g.musicSrc = GetPrivateProfileIntW(L"Funktionen", L"MusikQuelle", 0, g.ini.c_str()) == 1 ? 1 : 0;
     g.musicOn = GetPrivateProfileIntW(L"Funktionen", L"MusikPlayer", 1, g.ini.c_str()) != 0;
@@ -1490,7 +1494,7 @@ static void LayoutDesign(int W, int pad, int y0) {
     };
     int y = y0;
     {   // Aussehen
-        int rows = 4 + (g.blur ? 1 : 0) + (g.imgPath.empty() ? 0 : 1);
+        int rows = 6 + (g.blur ? 1 : 0) + (g.imgPath.empty() ? 0 : 1);
         int ch = headH + rows * rowH2 + ip;
         g.hits.push_back({{pad, y, pad + cw, y + ch}, HT::SetCard, -2, -2});
         g.hits.push_back({{pad, y, pad + cw, y + headH}, HT::SetSection, 0});
@@ -1507,6 +1511,8 @@ static void LayoutDesign(int W, int pad, int y0) {
         g.hits.push_back({{bx, by, bx + S(130), by + bh}, HT::SetButton, 0});
         g.hits.push_back({{bx + S(138), by, bx + S(138) + S(100), by + bh}, HT::SetButton, 1});
         if (!g.imgPath.empty()) slider(row(ry, 4), 1);  // Bildstärke
+        toggle(row(ry, 25), 20);                // Cover in den Musik-Kacheln
+        toggle(row(ry, 26), 21);                // Trennlinien zwischen Songs
         y += ch + gap;
     }
     {   // Schrift & Bewegung
@@ -2864,6 +2870,10 @@ static void DrawHit(HDC dc, const Hit& h, bool hot, int cardHot) {
                                           L"Schriftart", L"Fette Schrift", L"Ausfahren", L"Taste zum Öffnen",
                                           L"HoverBar-Player", L"Spotify", L"Leiser bei Videos", L"Musik-Tasten", L"Link laden",
                                           L"Musik-Player", L"Steam", L"Epic Games", L"Riot Games", L"Andere Spiele"};
+        if (h.idx == 25 || h.idx == 26) {
+            Text(dc, h.idx == 25 ? L"Cover in Kacheln" : L"Trennlinien", {h.rc.left + S(8), h.rc.top, h.rc.right - S(70), h.rc.bottom}, g.fText, cText, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            break;
+        }
         if (h.idx == 24) {  // HoverBar: Version + Update-Stand
             UpdateStatus us = Update_Status();
             std::wstring sub = us.state == UPD_IDLE ? L"Version " + std::wstring(HB_VERSION) : us.msg;
@@ -2982,7 +2992,7 @@ static void DrawHit(HDC dc, const Hit& h, bool hot, int cardHot) {
         bool on = h.idx == 0 ? g.blur : h.idx == 1 ? AutostartEnabled() : h.idx == 2 ? g.onlyDesktop : h.idx == 3 ? g.fontBold
                 : h.idx == 10 ? g.musicSrc == 0 : h.idx == 11 ? g.musicSrc == 1 : h.idx == 12 ? g.duckOn
                 : h.idx == 13 ? g.musicKeys : h.idx == 15 ? g.musicOn
-                : h.idx >= 16 && h.idx <= 19 ? Games_SourceOn(h.idx - 16) : g.grabKey;
+                : h.idx >= 16 && h.idx <= 19 ? Games_SourceOn(h.idx - 16) : h.idx == 20 ? g.tileCovers : h.idx == 21 ? g.songLines : g.grabKey;
         int th = h.rc.bottom - h.rc.top;
         FillRound(dc, h.rc, th, on ? cAccent : (hot ? cCardHot : cHover));
         int kr = th / 2 - S(4);
@@ -3535,6 +3545,12 @@ static void DrawHit(HDC dc, const Hit& h, bool hot, int cardHot) {
         bool dragged = g.dragging && g.dragMusic && h.idx == g.dragApp && (h.type != HT::PlSongRow || h.pos == g.dragFromPos);
         if (dragged) FillRound(dc, h.rc, S(10), cCardHot);
         else if (hot && !g.dragging) FillRound(dc, h.rc, S(10), cHover);
+        if (g.songLines && h.type == HT::MRow) {  // kaum sichtbar, in der Lücke unter der Zeile
+            float fade = g.drawFade;
+            g.drawFade = fade * 0.09f;
+            FillRound(dc, {h.rc.left + S(12), h.rc.bottom + S(1), h.rc.right - S(12), h.rc.bottom + S(1) + std::max(1, S(1))}, 0, RGB(255, 255, 255));
+            g.drawFade = fade;
+        }
         int rh = h.rc.bottom - h.rc.top, isz = h.type == HT::MRow ? rh - S(12) : S(32);
         DrawCover(dc, s->cover, h.rc.left + S(8), h.rc.top + (rh - isz) / 2, isz);
         int tx = h.rc.left + S(8) + isz + S(12);
@@ -3774,6 +3790,18 @@ static void DrawHit(HDC dc, const Hit& h, bool hot, int cardHot) {
         size_t n = h.idx == 1 ? g.mFav.size() : h.idx == 2 ? Music_Playlists().size() : g.mRecent.size();
         COLORREF ic = sel ? RGB(255, 255, 255) : h.idx == 1 ? RGB(255, 100, 130) : cText;
         int hh = h.rc.bottom - h.rc.top;
+        if (g.tileCovers) {  // blass rechts: zuletzt hinzugefügter Favorit / neueste Playlist / zuletzt gehört
+            const Song* c = nullptr;
+            if (h.idx == 1 && !g.mFav.empty()) c = SongAt(g.mFav.front());
+            else if (h.idx == 2 && !g.plItems.empty() && !g.plItems.back().empty()) c = SongAt(g.plItems.back().back());
+            else if (h.idx == 3 && !g.mRecent.empty()) c = SongAt(g.mRecent.front());
+            if (c && !c->cover.empty()) {
+                float fade = g.drawFade;
+                g.drawFade = fade * 0.35f;
+                DrawCover(dc, c->cover, h.rc.right - hh, h.rc.top, hh);
+                g.drawFade = fade;
+            }
+        }
         RECT gr = {h.rc.left + S(10), h.rc.top, h.rc.left + S(10) + S(30), h.rc.bottom};
         Text(dc, gl[h.idx], gr, g.fGlyph, ic, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         RECT t1 = {gr.right + S(6), h.rc.top + S(8), h.rc.right - S(6), h.rc.top + hh / 2 + S(2)};
@@ -5100,6 +5128,7 @@ static void OpenBar(POINT pt) {
     }
     Music_Init(g.hwnd);
     LoadFavRecent();
+    Music_ImportEdits();
     BuildMusic();
     Player_SetVolume(VolumeGain(g.volume));
     g.pst = Player_State();
@@ -7237,6 +7266,10 @@ static void Activate(int hitIdx, bool right) {
                 RegisterGrabKey();
                 if (SpotifyMode() && g.open) Media_Open(g.hwnd, S(kBarArt));
             }
+        } else if (h.idx == 20 || h.idx == 21) {
+            bool& v = h.idx == 20 ? g.tileCovers : g.songLines;
+            v = !v;
+            IniSet(L"Einstellungen", h.idx == 20 ? L"KachelCover" : L"Trennlinien", v ? L"1" : L"0");
         } else if (h.idx == 12) {
             g.duckOn = !g.duckOn;
             IniSet(L"Funktionen", L"LeiserBeiVideos", g.duckOn ? L"1" : L"0");
@@ -7742,8 +7775,68 @@ static void QueueLink(const std::wstring& url) {
     }
 }
 
+static bool Focusable(HT t) {
+    switch (t) {
+    case HT::None: case HT::SetCard: case HT::SetSection: case HT::SetRowLabel: case HT::Pane: case HT::PaneTitle: case HT::MusicEmpty:
+    case HT::EditInfo: case HT::EditLabel: case HT::PlugCard: case HT::NavBar: case HT::MusicBar: case HT::RecentCard: case HT::CalHead:
+    case HT::CalInfo: case HT::GameHead: case HT::SetHiddenHead: case HT::SetDrop: case HT::PlDrop: return false;
+    default: return true;
+    }
+}
+
+// Pfeiltasten: die nächste anklickbare Fläche in dieser Richtung markieren und in den sichtbaren Bereich scrollen
+static void KeyNav(WPARAM vk) {
+    int dx = vk == VK_LEFT ? -1 : vk == VK_RIGHT ? 1 : 0, dy = vk == VK_UP ? -1 : vk == VK_DOWN ? 1 : 0;
+    int cur = g.hot >= 0 && g.hot < (int)g.hits.size() && Focusable(g.hits[g.hot].type) ? g.hot : -1, best = -1;
+    long bestScore = LONG_MAX;
+    for (int i = 0; i < (int)g.hits.size(); i++) {
+        const Hit& h = g.hits[i];
+        if (i == cur || !Focusable(h.type)) continue;
+        long score;
+        if (cur < 0) {  // Einstieg: oberste Fläche des Inhalts
+            if (IsHeaderHit(h.type) || h.rc.top < ContentTop()) continue;
+            score = h.rc.top * 4 + h.rc.left;
+        } else {
+            const RECT& a = g.hits[cur].rc;
+            long x = (h.rc.left + h.rc.right - a.left - a.right) / 2, y = (h.rc.top + h.rc.bottom - a.top - a.bottom) / 2;
+            long along = x * dx + y * dy;
+            if (along <= 0) continue;
+            // Abstand quer zur Richtung: 0, solange sich die Flächen überlappen
+            long gap = dx ? std::max(0L, std::max(h.rc.top - a.bottom, a.top - h.rc.bottom)) : std::max(0L, std::max(h.rc.left - a.right, a.left - h.rc.right));
+            score = along + gap * 4 + std::labs(dx ? y : x) / 4;
+        }
+        if (score < bestScore) { bestScore = score; best = i; }
+    }
+    if (best < 0) return;
+    g.kbdNav = true;
+    const Hit t = g.hits[best];
+    g.hot = best;
+    if (!IsHeaderHit(t.type)) {
+        RECT c = PaneClip(t.pane);
+        int d = t.rc.top < c.top ? t.rc.top - c.top - S(8) : t.rc.bottom > c.bottom ? t.rc.bottom - c.bottom + S(8) : 0;
+        if (d) {
+            StopScrollAnim();
+            (t.pane == 2 ? g.scrollR : g.scroll) += d;
+            ClampScroll();
+            Layout();
+            for (int i = 0; i < (int)g.hits.size(); i++) {
+                const Hit& h = g.hits[i];
+                if (h.type == t.type && h.idx == t.idx && h.f == t.f && h.pos == t.pos) { g.hot = i; break; }
+            }
+        }
+    }
+    Render();
+}
+
 static void OnKeyDown(WPARAM vk) {
     bool ctrl = GetKeyState(VK_CONTROL) & 0x8000;
+    bool typed = !g.query.empty() || g.view == View::SongEdit || g.namingFor >= 0 || g.creatingFolder;  // links/rechts gehören dann dem Textfeld
+    bool trim = g.view == View::SongEdit && g.editField == 0 && g.trimSel;
+    if (vk == VK_UP || vk == VK_DOWN || ((vk == VK_LEFT || vk == VK_RIGHT) && !typed && !trim)) { KeyNav(vk); return; }
+    if ((vk == VK_RETURN || vk == VK_APPS) && g.kbdNav && g.hot >= 0 && g.hot < (int)g.hits.size()) {
+        Activate(g.hot, vk == VK_APPS);  // Menü-Taste = Rechtsklick (z. B. Song bearbeiten)
+        return;
+    }
     if (vk == VK_ESCAPE) {
         if (g.view == View::SongEdit) LeaveSongEdit();
         else if (g.view == View::NowPlaying) LeaveNowPlaying();
@@ -8524,7 +8617,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         if (msg == WM_SYSKEYDOWN) break;
-        if (TypingAllowed() || wp == VK_ESCAPE) OnKeyDown(wp);
+        if (TypingAllowed() || wp == VK_ESCAPE || wp == VK_UP || wp == VK_DOWN || wp == VK_LEFT || wp == VK_RIGHT || wp == VK_RETURN ||
+            wp == VK_APPS || wp == VK_SPACE) OnKeyDown(wp);
         return 0;
     case WM_CHAR:
         if (TypingAllowed() && wp >= 32 && wp != 127 && !(GetKeyState(VK_CONTROL) & 0x8000 && !(GetKeyState(VK_MENU) & 0x8000))) {
@@ -8572,6 +8666,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
         }
         int h = HitTest(pt);
+        static POINT lastPt = {-1, -1};  // nur echte Mausbewegung beendet die Tastatur-Markierung
+        if (pt.x == lastPt.x && pt.y == lastPt.y) return 0;
+        lastPt = pt;
+        g.kbdNav = false;
         if (h != g.hot) {
             g.hot = h;
             UpdateVolHover();

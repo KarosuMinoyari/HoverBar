@@ -63,7 +63,7 @@ fun NowPlayingScreen(vm: MusicViewModel, onClose: () -> Unit) {
 
     Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
     // weichgezeichnetes Cover als Hintergrund (Weichzeichner erst ab Android 12, davor nur sehr blass)
-    song?.coverUri?.let {
+    song?.coverUri?.takeIf { vm.look.value.coverBackdrop }?.let {
         AsyncImage(
             model = it, contentDescription = null, contentScale = ContentScale.Crop,
             modifier = Modifier.fillMaxSize().blur(70.dp), alpha = if (Build.VERSION.SDK_INT >= 31) 0.55f else 0.12f,
@@ -75,8 +75,11 @@ fun NowPlayingScreen(vm: MusicViewModel, onClose: () -> Unit) {
             .pointerInput(Unit) { detectTapGestures { } },  // Berührungen nicht an die Bibliothek darunter durchlassen
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Start) {
+        var editing by remember { mutableStateOf<Song?>(null) }
+        editing?.let { EditDialog(vm, it) { editing = null } }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             IconButton(onClick = onClose) { Icon(HmIcons.Down, "Schließen", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
+            if (song != null) IconButton(onClick = { editing = song }) { Icon(HmIcons.Pencil, "Song bearbeiten", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
         }
         Cover(song, null, Modifier.fillMaxWidth(0.78f).aspectRatio(1f), radius = 22)
         Spacer(Modifier.height(18.dp))

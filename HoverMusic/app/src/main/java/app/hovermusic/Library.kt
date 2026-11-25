@@ -55,7 +55,7 @@ object LibraryLoader {
         return out
     }
 
-    class Loaded(val library: Library, val rawJson: String)
+    class Loaded(val library: Library, val rawJson: String, val folderId: String)
 
     /** Lädt die Bibliothek aus dem gewählten Ordner. Wirft eine Exception mit verständlicher Meldung. */
     fun load(ctx: Context, tree: Uri): Loaded {
@@ -84,7 +84,21 @@ object LibraryLoader {
             children(cr, tree, coverDir.docId).filter { !it.isDir }
                 .associate { "Cover/" + it.name to DocumentsContract.buildDocumentUriUsingTree(tree, it.docId) }
         } else emptyMap()
-        return Loaded(parse(text, files, covers), text)
+        val lyricsDir = kids.firstOrNull { it.isDir && it.name == "Songtexte" }
+        val lyrics = if (lyricsDir != null) {
+            children(cr, tree, lyricsDir.docId).filter { !it.isDir }
+                .associate { "Songtexte/" + it.name to DocumentsContract.buildDocumentUriUsingTree(tree, it.docId) }
+        } else emptyMap()
+        var library = parse(text, files + lyrics, covers)
+        // Änderungen vom Handy, die der PC noch nicht übernommen hat
+        files[Edits.FILE_NAME]?.let { u ->
+            val edits = Edits.parse(cr.openInputStream(u)?.use { it.readBytes().toString(Charsets.UTF_8) } ?: "")
+            library = library.copy(songs = library.songs.map { s ->
+                val e = edits[s.id] ?: return@map s
+                s.copy(title = e.title.ifEmpty { s.title }, artist = e.artist, coverUri = covers[e.cover] ?: s.coverUri)
+            })
+        }
+        return Loaded(library, text, baseId)
     }
 
     /** Aus dem Zwischenspeicher (ohne Dateizugriff): Titel und Listen sofort, Dateien erst nach dem Aktualisieren. */

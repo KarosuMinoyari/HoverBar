@@ -2,6 +2,9 @@ package app.hovermusic
 
 import android.content.Context
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
+import android.widget.Toast
 import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.YoutubeDLRequest
 import kotlinx.coroutines.CoroutineScope
@@ -88,13 +91,19 @@ object Downloader {
         }
     }
 
-    fun download(ctx: Context, sharedText: String) {
+    private fun say(ctx: Context, text: String, toast: Boolean) {
+        status.value = text
+        if (toast) Handler(Looper.getMainLooper()).post { Toast.makeText(ctx, text, Toast.LENGTH_SHORT).show() }
+    }
+
+    fun download(ctx: Context, sharedText: String, toast: Boolean = false) {
         val app = ctx.applicationContext
         val url = youtubeUrl(sharedText)
         if (url == null) {
-            status.value = "Das ist kein YouTube-Link."
+            say(app, "Das ist kein YouTube-Link.", toast)
             return
         }
+        if (toast) say(app, "Song wird geladen …", true)
         scope.launch {
             mutex.withLock {
                 try {
@@ -110,9 +119,9 @@ object Downloader {
                         if (progress > 0) status.value = "Song wird geladen … ${progress.toInt()} %"
                     }
                     finished.value++
-                    status.value = "Song gespeichert."
+                    say(app, "Song gespeichert.", toast)
                 } catch (e: Throwable) {
-                    status.value = "Download fehlgeschlagen: " + (e.message?.lineSequence()?.lastOrNull { it.isNotBlank() }?.take(140) ?: "unbekannt")
+                    say(app, "Download fehlgeschlagen: " + (e.message?.lineSequence()?.lastOrNull { it.isNotBlank() }?.take(140) ?: "unbekannt"), toast)
                 }
             }
         }

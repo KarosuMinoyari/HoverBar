@@ -39,7 +39,14 @@ import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.LocalTextStyle
+import androidx.compose.material3.Surface
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.animation.core.tween
+import androidx.compose.ui.draw.blur
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.font.FontWeight
+import coil.compose.AsyncImage
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -55,37 +62,32 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 
-private val HoverColors = darkColorScheme(
-    primary = Color(0xFF4C8DFF),
-    onPrimary = Color.White,
-    background = Color(0xFF0E0E13),
-    surface = Color(0xFF191922),
-    surfaceVariant = Color(0xFF24242F),
-    onBackground = Color(0xFFF5F5F8),
-    onSurface = Color(0xFFF5F5F8),
-    onSurfaceVariant = Color(0xFFAFAFBA),
-)
-
 class MainActivity : ComponentActivity() {
     private val vm: MusicViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        setContent {
-            MaterialTheme(colorScheme = HoverColors) { App(vm) }
+        publishShareShortcut(this)
+        setContent { Themed(vm) { App(vm) } }
+    }
+}
+
+/** Farben, Schrift und Hintergrundbild aus den Einstellungen; Surface sorgt für helle Schrift auf dunklem Grund. */
+@Composable
+private fun Themed(vm: MusicViewModel, content: @Composable () -> Unit) {
+    val look = vm.look.value
+    MaterialTheme(colorScheme = look.colors()) {
+        Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background, contentColor = MaterialTheme.colorScheme.onBackground) {
+            if (look.image.isNotEmpty()) {
+                AsyncImage(
+                    model = Uri.parse(look.image), contentDescription = null, contentScale = ContentScale.Crop, alpha = look.imageStrength,
+                    modifier = Modifier.fillMaxSize().let { if (look.blur) it.blur(30.dp) else it },
+                )
+            }
+            val style = LocalTextStyle.current.copy(fontFamily = look.fontFamily, fontWeight = if (look.bold) FontWeight.SemiBold else null)
+            CompositionLocalProvider(LocalTextStyle provides style, content = content)
         }
-        if (savedInstanceState == null) handleShare(intent)
-    }
-
-    override fun onNewIntent(intent: Intent) {
-        super.onNewIntent(intent)
-        handleShare(intent)
-    }
-
-    private fun handleShare(intent: Intent?) {
-        if (intent?.action != Intent.ACTION_SEND) return
-        Downloader.download(this, intent.getStringExtra(Intent.EXTRA_TEXT).orEmpty())
     }
 }
 
@@ -93,7 +95,9 @@ class MainActivity : ComponentActivity() {
 private fun App(vm: MusicViewModel) {
     val ctx = androidx.compose.ui.platform.LocalContext.current
     val hasFolder by vm.hasFolder.collectAsState()
-    var showNow by remember { mutableStateOf(false) }
+    val showNow by vm.showNow.collectAsState()
+    var showSettings by remember { mutableStateOf(false) }
+    val look = vm.look.value
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null) vm.setFolder(uri)
@@ -105,21 +109,22 @@ private fun App(vm: MusicViewModel) {
         ) notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
     }
 
-    Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).systemBarsPadding()) {
+    Box(Modifier.fillMaxSize().systemBarsPadding()) {
         if (!hasFolder) {
             SetupScreen(vm, onPick = { picker.launch(null) })
         } else {
-            LibraryScreen(vm, onOpenNow = { showNow = true }, onPickFolder = { picker.launch(null) })
+            LibraryScreen(vm, onOpenNow = { vm.showNow.value = true }, onSettings = { showSettings = true }, onPickFolder = { picker.launch(null) })
             AnimatedVisibility(
                 visible = showNow,
-                enter = slideInVertically(initialOffsetY = { it }),
-                exit = slideOutVertically(targetOffsetY = { it }),
+                enter = slideInVertically(tween(look.millis), initialOffsetY = { it }),
+                exit = slideOutVertically(tween(look.millis), targetOffsetY = { it }),
             ) {
-                NowPlayingScreen(vm, onClose = { showNow = false })
+                NowPlayingScreen(vm, onClose = { vm.showNow.value = false })
             }
         }
+        if (showSettings) SettingsScreen(vm, onClose = { showSettings = false }, onPickFolder = { picker.launch(null) })
     }
-    BackHandler(enabled = showNow) { showNow = false }
+    BackHandler(enabled = showNow && !showSettings) { vm.showNow.value = false }
 }
 
 /** Einrichtung: QR-Code aus HoverBar scannen, dann führt die App durch Cloud-App und Ordnerwahl. */

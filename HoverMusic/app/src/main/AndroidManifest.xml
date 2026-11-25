@@ -34,13 +34,34 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-            <!-- YouTube: Teilen -> HoverMusic lädt den Song -->
+            <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts" />
+        </activity>
+
+        <!-- YouTube: Teilen -> HoverMusic lädt den Song, ohne die App zu öffnen -->
+        <activity
+            android:name=".ShareActivity"
+            android:exported="true"
+            android:label="Song laden"
+            android:excludeFromRecents="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="text/plain" />
             </intent-filter>
         </activity>
+
+        <service
+            android:name=".DownloadTile"
+            android:exported="true"
+            android:icon="@drawable/ic_tile"
+            android:label="Song laden"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
 
         <service
             android:name=".PlaybackService"
