@@ -1933,6 +1933,27 @@ int Music_ImportFolder() {
     return added;
 }
 
+// Cloud-Programme laden unter Zwischennamen (MEGA: .getxfer, andere .tmp/.part/...). Ändert sich der Prüfwert, kommt noch etwas an.
+// shortcut: Dateien, mit denen das Cloud-Programm noch gar nicht angefangen hat, sind von hier aus nicht zu sehen
+unsigned long long Music_FolderState(bool& busy) {
+    busy = false;
+    unsigned long long state = 1469598103934665603ull;
+    for (const wchar_t* sub : {L"", L"\\Cover", L"\\Songtexte"}) {
+        WIN32_FIND_DATAW fd;
+        HANDLE h = FindFirstFileW((Music_Folder() + sub + L"\\*").c_str(), &fd);
+        if (h == INVALID_HANDLE_VALUE) continue;
+        do {
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+            for (const wchar_t* part : {L".getxfer", L".part", L".partial", L".crdownload", L".download", L".!sync"})
+                if (StrStrIW(fd.cFileName, part)) busy = true;
+            for (const wchar_t* c = fd.cFileName; *c; c++) state = (state ^ *c) * 1099511628211ull;
+            state = (state ^ fd.nFileSizeLow) * 1099511628211ull;
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+    return state;
+}
+
 // Zeilen: Song-ID <Tab> Titel <Tab> Künstler <Tab> Cover ("Cover/Name" oder leer) [<Tab> Schnitte, siehe unten]. Die Datei kommt aus der Cloud, also prüfen.
 bool Music_ImportEdits() {
     if (!g_syncExport) return false;

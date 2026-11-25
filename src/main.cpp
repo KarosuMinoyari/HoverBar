@@ -55,7 +55,7 @@ static std::wstring sCloudMsg;
 enum { WM_APP_LIST = WM_APP + 1, WM_APP_ICON, WM_APP_DONE, WM_APP_SHOW };
 enum { WM_APP_SCROLLGO = WM_APP + 70, WM_APP_FAVICON };
 static LARGE_INTEGER sScrollStart = {};
-enum { T_POLL = 1, T_WATCH, T_FREE, T_CARET, T_REDRAW, T_DRAG, T_TIP, T_SCROLL, T_PLAYER, T_PIDLE, T_HOTKEY, T_ENDHOLD, T_GRAB, T_DUCK, T_GAMES, T_VOL, T_RUN, T_LYR, T_NPDROP, T_LYRBACK, T_CHATFREE, T_CLOUDWAIT };
+enum { T_POLL = 1, T_WATCH, T_FREE, T_CARET, T_REDRAW, T_DRAG, T_TIP, T_SCROLL, T_PLAYER, T_PIDLE, T_HOTKEY, T_ENDHOLD, T_GRAB, T_DUCK, T_GAMES, T_VOL, T_RUN, T_LYR, T_NPDROP, T_LYRBACK, T_CHATFREE, T_CLOUDWAIT, T_RELOAD };
 // Musik leiser, solange ein Browser/Video-Player Ton ausgibt
 static double sDuck = 1.0;
 static bool sDucked = false;
@@ -510,6 +510,8 @@ struct State {
     UINT grabVk = VK_END, grabMods = MOD_ALT;  // Taste für "Link laden"
     bool grabCapture = false;
     bool tileCovers = true, songLines = true;   // Grafik: Cover in den Musik-Kacheln, Trennlinien
+    int reload = 0, reloadTick = 0, reloadStable = 0;  // Neueinlesen: 0 nichts, 1 lädt, 2 fertig (Balken voll)
+    unsigned long long reloadSnap = 0;
     bool kbdNav = false;                        // zuletzt mit Pfeiltasten navigiert (Enter aktiviert dann die Markierung)
     bool sortPlays = false;                    // "Alle Songs" nach Wiedergaben statt Titel
     bool hotCapture = false;                     // wartet in den Einstellungen auf eine neue Taste
@@ -3534,6 +3536,17 @@ static void DrawHit(HDC dc, const Hit& h, bool hot, int cardHot) {
     case HT::MReload:
         FillRound(dc, h.rc, S(22), hot ? cCardHot : cCard);
         Text(dc, L"\uE72C", h.rc, g.fGlyph, cText, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        if (g.reload) {  // Balken darunter: läuft durch, solange noch Dateien ankommen; voll = alles eingelesen
+            RECT bar = {h.rc.left + S(2), h.rc.bottom + S(3), h.rc.right - S(2), h.rc.bottom + S(7)};
+            FillRound(dc, bar, S(4), cSearch);
+            RECT fill = bar;
+            if (g.reload == 1) {
+                int w = bar.right - bar.left, seg = w / 2, x = bar.left - seg + (g.reloadTick * w / 10) % (w + seg);
+                fill.left = std::max((int)bar.left, x);
+                fill.right = std::min((int)bar.right, x + seg);
+            }
+            if (fill.right > fill.left) FillRound(dc, fill, S(4), cAccent);
+        }
         break;
     case HT::MSort:
         FillRound(dc, h.rc, S(22), hot ? cCardHot : cCard);
@@ -5061,6 +5074,8 @@ static void FinishClose() {
     Pool_Stop();       // Hilfs-Threads beenden
     FreeCovers();
     KillTimer(g.hwnd, T_PLAYER);
+    KillTimer(g.hwnd, T_RELOAD);  // beim nächsten Öffnen wird ohnehin neu gelesen
+    g.reload = 0;
     if (g.grabCapture) { g.grabCapture = false; RegisterGrabKey(); }  // Aufnahme abgebrochen
     g.pausedMinutes = 0;
     if (Player_State().active) SetTimer(g.hwnd, T_PIDLE, 60000, nullptr);  // pausierte Musik nach 10 Min. beenden
@@ -7144,18 +7159,14 @@ static void Activate(int hitIdx, bool right) {
     case HT::MPlayAll:
         PlayList(h.idx, 0);
         break;
-    case HT::MReload: {  // Songs vom Handy (oder von Hand hineinkopierte) und Handy-Änderungen übernehmen
-        int added = Music_ImportFolder();
-        bool edited = Music_ImportEdits();
-        BuildMusic();
-        Refresh();
-        std::wstring msg = added ? std::to_wstring(added) + (added == 1 ? L" neuer Song" : L" neue Songs") : L"Keine neuen Songs";
-        if (edited) msg += L", Änderungen vom Handy übernommen";
-        g.menuOpen = true;
-        MessageBoxW(g.hwnd, (msg + L".").c_str(), L"HoverBar", MB_OK | MB_ICONINFORMATION | MB_TOPMOST);
-        g.menuOpen = false;
+    case HT::MReload:  // Songs vom Handy (oder von Hand hineinkopierte) und Handy-Änderungen übernehmen, sobald alles da ist
+        if (g.reload == 1) break;
+        g.reload = 1;
+        g.reloadTick = g.reloadStable = 0;
+        g.reloadSnap = 0;
+        SetTimer(g.hwnd, T_RELOAD, 100, nullptr);
+        Render();
         break;
-    }
     case HT::MSort:
         g.sortPlays = !g.sortPlays;
         IniSet(L"Musik", L"NachWiedergaben", g.sortPlays ? L"1" : L"0");
@@ -8057,6 +8068,26 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 Layout();
                 Render();
             }
+        } else if (wp == T_RELOAD) {
+            g.reloadTick++;
+            if (g.reload == 1 && g.reloadTick % 5 == 0) {  // alle 0,5 s: kommt noch etwas an?
+                bool busy = false;
+                unsigned long long snap = Music_FolderState(busy);
+                g.reloadStable = !busy && snap == g.reloadSnap ? g.reloadStable + 1 : 0;
+                g.reloadSnap = snap;
+                if (g.reloadStable >= 4) {  // 2 s Ruhe: einlesen
+                    Music_ImportFolder();
+                    Music_ImportEdits();
+                    BuildMusic();
+                    g.reload = 2;
+                    g.reloadTick = 0;
+                    Layout();
+                }
+            } else if (g.reload == 2 && g.reloadTick >= 15) {  // voller Balken bleibt 1,5 s stehen
+                g.reload = 0;
+                KillTimer(hwnd, T_RELOAD);
+            }
+            if (g.open && !g.closing && !g.animating && !g.dragging) Render();
         } else if (wp == T_PIDLE) {
             PlayerState ps = Player_State();
             if (!ps.active || g.open) { KillTimer(hwnd, T_PIDLE); g.pausedMinutes = 0; }
