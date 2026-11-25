@@ -1,0 +1,10 @@
+build/
+migrate/
+*.obj
+*.res
+*.log
+*.pdb
+*.ilk
+*.update
+*.alt.exe
+dist/
