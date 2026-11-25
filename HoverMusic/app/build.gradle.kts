@@ -14,8 +14,9 @@ android {
         applicationId = "app.hovermusic"
         minSdk = 26
         targetSdk = 34
-        versionCode = 2
-        versionName = "0.2.0"
+        versionCode = 3
+        versionName = "0.3.0"
+        ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }  // yt-dlp bringt Python mit
     }
 
     // Signierung fürs Release: keystore.properties (liegt NICHT im Repo) mit storeFile, storePassword, keyAlias, keyPassword.
@@ -45,7 +46,10 @@ android {
     }
     kotlinOptions { jvmTarget = "17" }
     buildFeatures { compose = true }
-    packaging { resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" } }
+    packaging {
+        resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" }
+        jniLibs { useLegacyPackaging = true }  // yt-dlp muss entpackt auf dem Gerät liegen
+    }
 }
 
 dependencies {
@@ -61,6 +65,7 @@ dependencies {
     implementation("androidx.media3:media3-session:1.4.1")
     implementation("io.coil-kt:coil-compose:2.7.0")
     implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
+    implementation("io.github.junkfood02.youtubedl-android:library:0.18.1")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")
     testImplementation("com.google.zxing:core:3.5.3")

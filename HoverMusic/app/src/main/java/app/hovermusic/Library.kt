@@ -16,6 +16,7 @@ data class Song(
     val uri: Uri?,
     val coverUri: Uri?,
     val lyricsUri: Uri?,
+    val pcPlays: Int = 0,
 )
 
 data class Playlist(val name: String, val songIds: List<String>)
@@ -108,6 +109,7 @@ object LibraryLoader {
                     uri = files[file],
                     coverUri = if (cover.isNotEmpty()) covers[cover] else null,
                     lyricsUri = if (lyrics.isNotEmpty()) files[lyrics] else null,
+                    pcPlays = o.optInt("plays"),
                 ),
             )
         }

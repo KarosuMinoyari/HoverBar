@@ -2,6 +2,8 @@ package app.hovermusic
 
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
+import androidx.media3.common.MediaItem
+import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
@@ -20,6 +22,12 @@ class PlaybackService : MediaSessionService() {
             .setHandleAudioBecomingNoisy(true)  // Kopfhörer raus -> Pause
             .setWakeMode(C.WAKE_MODE_NETWORK)
             .build()
+        val prefs = Prefs(this)
+        player.addListener(object : Player.Listener {
+            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                mediaItem?.mediaId?.let { prefs.addPlay(it) }
+            }
+        })
         session = MediaSession.Builder(this, player).build()
     }
 

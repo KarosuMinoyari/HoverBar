@@ -27,6 +27,18 @@ class Prefs(ctx: Context) {
     fun recent(): List<String> = list("recent")
     fun setRecent(l: List<String>) = setList("recent", l)
 
+    var ytdlpUpdated: Boolean
+        get() = sp.getBoolean("ytdlp_updated", false)
+        set(v) { sp.edit().putBoolean("ytdlp_updated", v).apply() }
+
+    var sortByPlays: Boolean
+        get() = sp.getBoolean("sort_plays", false)
+        set(v) { sp.edit().putBoolean("sort_plays", v).apply() }
+
+    /** Wiedergaben auf diesem Handy (zählt der Wiedergabedienst). */
+    fun plays(id: String): Int = sp.getInt("plays_$id", 0)
+    fun addPlay(id: String) { sp.edit().putInt("plays_$id", plays(id) + 1).apply() }
+
     /** Beim ersten Mal die Favoriten vom PC übernehmen. */
     var favoritesSeeded: Boolean
         get() = sp.getBoolean("favs_seeded", false)

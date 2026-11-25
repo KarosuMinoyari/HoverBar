@@ -1,5 +1,10 @@
 package app.hovermusic
 
+import android.os.Build
+import androidx.compose.ui.draw.blur
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.layout.ContentScale
+import coil.compose.AsyncImage
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -56,8 +61,17 @@ fun NowPlayingScreen(vm: MusicViewModel, onClose: () -> Unit) {
     val favorites by vm.favorites.collectAsState()
     val song = id?.let { library?.byId?.get(it) }
 
+    Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+    // weichgezeichnetes Cover als Hintergrund (Weichzeichner erst ab Android 12, davor nur sehr blass)
+    song?.coverUri?.let {
+        AsyncImage(
+            model = it, contentDescription = null, contentScale = ContentScale.Crop,
+            modifier = Modifier.fillMaxSize().blur(70.dp), alpha = if (Build.VERSION.SDK_INT >= 31) 0.55f else 0.12f,
+        )
+    }
+    Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color.Transparent, MaterialTheme.colorScheme.background))))
     Column(
-        Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(horizontal = 20.dp)
+        Modifier.fillMaxSize().padding(horizontal = 24.dp)
             .pointerInput(Unit) { detectTapGestures { } },  // Berührungen nicht an die Bibliothek darunter durchlassen
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
@@ -114,6 +128,7 @@ fun NowPlayingScreen(vm: MusicViewModel, onClose: () -> Unit) {
         }
         Spacer(Modifier.height(8.dp))
         LyricsView(lyrics, pos, hasFile = song?.lyricsUri != null, onSeek = { vm.seekTo(it) }, modifier = Modifier.weight(1f).fillMaxWidth())
+    }
     }
 }
 

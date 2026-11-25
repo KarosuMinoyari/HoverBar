@@ -566,7 +566,7 @@ void Music_Init(HWND notify) {
             a = b + 1;
         }
         if (f[0] == L"S" && f.size() >= 8) {
-            Song s{f[1], f[2], f[3], f[4], f[5], f[6], _wtoi(f[7].c_str())};
+            Song s{f[1], f[2], f[3], f[4], f[5], f[6], _wtoi(f[7].c_str()), f.size() >= 9 ? _wtoi(f[8].c_str()) : 0};
             if (GetFileAttributesW(s.file.c_str()) != INVALID_FILE_ATTRIBUTES) g_songs.push_back(s);
         } else if (f[0] == L"P" && f.size() >= 2) {
             Playlist p{f[1], {}};
@@ -590,7 +590,7 @@ void Music_Save() {
     std::wstring out;
     for (auto& s : g_songs)
         out += L"S\t" + Clean(s.id) + L"\t" + Clean(s.file) + L"\t" + Clean(s.title) + L"\t" + Clean(s.artist) + L"\t" +
-               Clean(s.cover) + L"\t" + Clean(s.url) + L"\t" + std::to_wstring(s.duration) + L"\n";
+               Clean(s.cover) + L"\t" + Clean(s.url) + L"\t" + std::to_wstring(s.duration) + L"\t" + std::to_wstring(s.plays) + L"\n";
     for (auto& p : g_playlists) {
         out += L"P\t" + Clean(p.name);
         for (auto& id : p.ids) out += L"\t" + id;
@@ -1197,6 +1197,14 @@ void Player_Play(const std::vector<std::wstring>& ids, int start) {
             g_list.Items().Append(item);
             g_listIds.push_back(id);
         }
+        // Wiedergaben zählen, auch bei geschlossener Leiste (kommt aus einem Windows-Thread -> an den UI-Thread posten)
+        // shortcut: ein endlos wiederholter Song zählt nur einmal; bei Bedarf zusätzlich MediaPlayer.MediaEnded zählen
+        g_list.CurrentItemChanged([ids = g_listIds](wmp::MediaPlaybackList const& list, auto const&) {
+            uint32_t i = list.CurrentItemIndex();
+            if (i >= ids.size()) return;
+            auto* id = new std::wstring(ids[i]);
+            if (!PostMessageW(g_notify, WM_APP_MUSIC, MUSIC_PLAYED, (LPARAM)id)) delete id;
+        });
         if (g_listIds.empty()) return;
         start = std::max(0, std::min(start, (int)g_listIds.size() - 1));
         ApplyPlayModes();
@@ -1813,7 +1821,7 @@ bool Music_ExportLibrary() {
         }
         if (!songs.empty()) songs += ",\n";
         songs += "    {\"id\":\"" + JsonEsc(s.id) + "\",\"file\":\"" + JsonEsc(BaseNameOf(s.file)) + "\",\"title\":\"" + JsonEsc(s.title) +
-                 "\",\"artist\":\"" + JsonEsc(s.artist) + "\",\"duration\":" + std::to_string(s.duration) + ",\"cover\":\"" + JsonEsc(cover) +
+                 "\",\"artist\":\"" + JsonEsc(s.artist) + "\",\"duration\":" + std::to_string(s.duration) + ",\"plays\":" + std::to_string(s.plays) + ",\"cover\":\"" + JsonEsc(cover) +
                  "\",\"lyrics\":\"" + JsonEsc(lyrics) + "\",\"url\":\"" + JsonEsc(s.url) + "\"}";
         listed.push_back(s.id);
     }

@@ -37,13 +37,13 @@ Die Symbole sind unten angeheftet. Mit dem Mausrad über der Leiste blätterst d
 
 ## Musik
 
-Eigener Player für die Songs im Musikordner (Standard `Musik\HoverBar`, änderbar unter Funktionen). Songs kommen aus YouTube-Links: Link ins Feld der Bibliothek einfügen und Enter, oder Alt+Ende (markierter Link oder die Adresse der offenen YouTube-Seite). Dafür lädt HoverBar auf Wunsch `yt-dlp` herunter (Funktionen → *yt-dlp*, mit Prüfsumme).
+Eigener Player für die Songs im Musikordner (Standard `Musik\HoverBar`, änderbar unter Funktionen). Songs kommen aus YouTube-Links: Link ins Feld der Bibliothek einfügen und Enter, oder Alt+Ende (Taste unter Funktionen → *Link laden* änderbar; markierter Link oder die Adresse der offenen YouTube-Seite). Dafür lädt HoverBar auf Wunsch `yt-dlp` herunter (Funktionen → *yt-dlp*, mit Prüfsumme).
 
 - **Musikleiste unten:** Cover (Klick öffnet „Läuft gerade“), Titel, Fortschritt, Steuerung, Lautstärke (klappt beim Darüberfahren aus), Herz für Favoriten, Zufall/Wiederholen (jeder Klick wechselt den Modus: aus, Zufall, Playlist wiederholen, Song wiederholen).
 - **Läuft gerade:** Großes Cover, Steuerung, Songtext (aus einer `.lrc`-Datei neben dem Song oder von lrclib.net, dabei werden Titel und Künstler übertragen). Mit dem Mausrad im Text suchen, Klick springt dorthin; nach 2 s geht es zurück zur aktuellen Zeile. Nach unten scrollen klappt die Ansicht in die Bibliothek ein. Rechtsklick aufs Cover: Song bearbeiten.
 - **Song schneiden:** Rechtsklick → *Bearbeiten / Schneiden*. Linien für Anfang und Ende (auf die Millisekunde), Wellenform, Rückgängig, „Auswahl entfernen“. Verlustfrei.
 - **Tasten:** Ende halten + Pos1 = Play/Pause, Bild ab = weiter, Bild auf = zurück, „+“/„−“ = Lautstärke. Steuern nur den eigenen Player.
-- **Leiser bei Videos:** Spielt ein Browser oder Video-Player Ton, wird die Musik auf 10 % abgesenkt.
+- **Meistgespielt:** Der Knopf neben  Spielt ein Browser oder Video-Player Ton, wird die Musik auf 10 % abgesenkt.
 - Alles lässt sich unter Funktionen abschalten (Hauptschalter „Musik-Player“), auch zu Spotify wechseln.
 
 ## Musik-Sync (Erweiterung: Musik aufs Handy)
@@ -57,7 +57,7 @@ Optional unter Zahnrad → Vorgeschlagen → *Musik-Sync*. Legt deine Songs, Cov
 ```json
 {
   "format": "HoverBar-Bibliothek", "version": 1, "updated": "2026-11-25T12:30:00",
-  "songs": [ {"id":"…","file":"Name.mp3","title":"…","artist":"…","duration":156,"cover":"Cover/….jpg","lyrics":"Name.lrc","url":"https://…"} ],
+  "songs": [ {"id":"…","file":"Name.mp3","title":"…","artist":"…","duration":156,"plays":3,"cover":"Cover/….jpg","lyrics":"Name.lrc","url":"https://…"} ],
   "playlists": [ {"name":"…","songs":["id", …]} ],
   "favorites": ["id", …]
 }
@@ -74,7 +74,8 @@ Eigene App im Ordner `HoverMusic/` (Kotlin, Jetpack Compose, Media3), mit eigene
 
 - **Einrichten:** In HoverBar am PC *Musik-Sync* einrichten, am Ende erscheint der QR-Code. In HoverMusic „QR-Code scannen“ (nutzt den Code-Scanner der Google Play-Dienste, ohne Kamera-Berechtigung; alternativ „Link aus der Zwischenablage“): Die App führt durch die Installation der Cloud-App auf dem Handy und die Wahl des Ordners `HoverBar-Musik` (Android-Ordnerauswahl: Google Drive, OneDrive, MEGA, Koofr … erscheinen dort). Es werden keine Zugangsdaten und keine Cloud-Schnittstellen gebraucht, die App liest nur diesen Ordner.
 - **Funktionen:** Alle Songs, Favoriten, Playlists, Zuletzt gespielt; „Läuft gerade“ mit großem Cover, Fortschritt, Zurück/Play/Weiter, Zufall/Wiederholen (jeder Klick wechselt: aus → Zufall → Playlist wiederholen → Song wiederholen), Herz; Songtext mit Mitscrollen (Tippen auf eine Zeile springt dorthin, nach 2 s geht es zur aktuellen Zeile zurück); Wiedergabe im Hintergrund mit Steuerung in der Benachrichtigung und auf dem Sperrbildschirm.
-- **Favoriten und „Zuletzt“** liegen lokal auf dem Handy (die Favoriten vom PC werden einmal übernommen). Die Bibliothek wird beim Start und über den Aktualisieren-Knopf neu gelesen und für den Start ohne Netz zwischengespeichert. Die Songs selbst streamt oder lädt der Cloud-Anbieter beim Abspielen; wer sie offline braucht, markiert den Ordner im Cloud-App als „offline verfügbar“.
+- **Von YouTube laden:** In YouTube auf *Teilen* → HoverMusic. yt-dlp wird beim ersten Start in der neuesten Version geholt (Aktualisieren über das Download-Symbol). Diese Songs bleiben auf dem Handy, nicht im Cloud-Ordner.
+- **Meistgespielt:**  liegen lokal auf dem Handy (die Favoriten vom PC werden einmal übernommen). Die Bibliothek wird beim Start und über den Aktualisieren-Knopf neu gelesen und für den Start ohne Netz zwischengespeichert. Die Songs selbst streamt oder lädt der Cloud-Anbieter beim Abspielen; wer sie offline braucht, markiert den Ordner im Cloud-App als „offline verfügbar“.
 - **Installieren:** APK aus dem Release auf dem Handy öffnen und „Installation aus dieser Quelle“ erlauben (die App ist nicht im Play Store). Voraussetzung: Android 8 oder neuer.
 - **Bauen:** JDK 17 und Android SDK (Plattform 34), dann in `HoverMusic/`: `gradlew assembleDebug` bzw. `gradlew test`. Für signierte Releases liegt eine `keystore.properties` (nicht im Repo) neben dem Projekt; `tools\release-hovermusic.ps1` baut und veröffentlicht.
 

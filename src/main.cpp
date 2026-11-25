@@ -232,7 +232,7 @@ enum class HT {
     // Musik
     MusicJob, MusicEmpty, MCard, MTile, MMore, MPlayAll, MRow, PlHead, PlUp, PlDown, PlDelete, PlDrop, PlSongRow,
     AllSongRow, AllSongAdd, AllSongEdit, MusicOpen, MProgress, EditCover, EditBtn, EditInfo, CoverPick, EditLabel, EditField,
-    MAlbum, VolIcon, MusicManage, MSize
+    MAlbum, VolIcon, MusicManage, MSize, MSort, GrabKeyBtn
 };
 struct Hit {
     RECT rc;
@@ -507,6 +507,9 @@ struct State {
     bool textDrag = false;
     // Taste zum Öffnen (global), Standard: Ende
     UINT hotVk = VK_END, hotMods = 0;
+    UINT grabVk = VK_END, grabMods = MOD_ALT;  // Taste für "Link laden"
+    bool grabCapture = false;
+    bool sortPlays = false;                    // "Alle Songs" nach Wiedergaben statt Titel
     bool hotCapture = false;                     // wartet in den Einstellungen auf eine neue Taste
     // Musik-Player
     MediaInfo media;               // aktuelle Wiedergabe (ohne Bild)
@@ -577,6 +580,11 @@ static void IniSet(const wchar_t* sec, const std::wstring& key, const wchar_t* v
     WritePrivateProfileStringW(sec, key.c_str(), val, g.ini.c_str());
 }
 
+// "Link laden"-Taste belegen (id 5); true, wenn nichts zu belegen war oder es geklappt hat
+static bool RegisterGrabKey() {
+    return !g.grabKey || !g.musicOn || RegisterHotKey(g.hwnd, 5, g.grabMods | MOD_NOREPEAT, g.grabVk);
+}
+
 static void InitIni() {
     PWSTR p = nullptr;
     std::wstring dir;
@@ -613,6 +621,9 @@ static void InitIni() {
     g.volume = std::max(0, std::min(100, (int)GetPrivateProfileIntW(L"Einstellungen", L"Lautstaerke", 80, g.ini.c_str())));
     g.musicSize = std::max(0, std::min(2, (int)GetPrivateProfileIntW(L"Einstellungen", L"MusikGroesse", 1, g.ini.c_str())));
     g.hotVk = GetPrivateProfileIntW(L"Einstellungen", L"Taste", VK_END, g.ini.c_str());
+    g.grabVk = GetPrivateProfileIntW(L"Einstellungen", L"LinkTasteVk", VK_END, g.ini.c_str());
+    g.grabMods = GetPrivateProfileIntW(L"Einstellungen", L"LinkTasteMods", MOD_ALT, g.ini.c_str());
+    g.sortPlays = GetPrivateProfileIntW(L"Musik", L"NachWiedergaben", 0, g.ini.c_str()) != 0;
     g.hotMods = GetPrivateProfileIntW(L"Einstellungen", L"TasteMods", 0, g.ini.c_str());
     g.musicSrc = GetPrivateProfileIntW(L"Funktionen", L"MusikQuelle", 0, g.ini.c_str()) == 1 ? 1 : 0;
     g.musicOn = GetPrivateProfileIntW(L"Funktionen", L"MusikPlayer", 1, g.ini.c_str()) != 0;
@@ -1627,6 +1638,7 @@ static void LayoutFunctions(int W, int pad, int y0) {
         int ry = y + headH;
         rowToggle(ry, 15, 13);  // Musik-Tasten
         rowToggle(ry, 16, 14);  // Link laden
+        g.hits.push_back({{pad + cw - ip - S(222), ry - rowH2 + S(12), pad + cw - ip - S(62), ry - S(12)}, HT::GrabKeyBtn, 0});
         y += ch + gap;
     }
     g.contentH = y - y0;
@@ -1751,7 +1763,10 @@ static void BuildMusic() {
     auto& songs = Music_Songs();
     g.mAll.clear();
     for (int i = 0; i < (int)songs.size(); i++) g.mAll.push_back(i);
-    std::sort(g.mAll.begin(), g.mAll.end(), [&](int a, int b) { return lstrcmpiW(songs[a].title.c_str(), songs[b].title.c_str()) < 0; });
+    std::sort(g.mAll.begin(), g.mAll.end(), [&](int a, int b) {
+        if (g.sortPlays && songs[a].plays != songs[b].plays) return songs[a].plays > songs[b].plays;
+        return lstrcmpiW(songs[a].title.c_str(), songs[b].title.c_str()) < 0;
+    });
     BuildFavRecent();
     g.plItems.clear();
     for (auto& p : Music_Playlists()) {
@@ -1885,7 +1900,9 @@ static void LayoutMusic(int W, int pad, int y0) {
         int list = g.libTab == 1 ? -2 : g.libTab == 3 ? -3 : -1;
         const auto& items = MusicListItems(list);
         if (!items.empty()) {
-            g.hits.push_back({{pad, y, pad + cw, y + S(44)}, HT::MPlayAll, list});
+            int sortW = list == -1 ? S(156) : 0;  // Sortierung nur bei "Alle Songs"
+            g.hits.push_back({{pad, y, pad + cw - sortW - (sortW ? S(8) : 0), y + S(44)}, HT::MPlayAll, list});
+            if (sortW) g.hits.push_back({{pad + cw - sortW, y, pad + cw, y + S(44)}, HT::MSort, 0});
             y += S(54);
         } else if (!Music_Songs().empty()) {
             g.hits.push_back({{pad, y, pad + cw, y + S(40)}, HT::EditInfo, g.libTab == 1 ? 11 : 12});
@@ -2550,23 +2567,23 @@ static void DrawField(HDC dc, RECT box, const std::wstring& text, const wchar_t*
 }
 
 // Name der Taste, z. B. "Ende" oder "Strg+Alt+M"
-static std::wstring HotkeyName() {
-    if (!g.hotVk) return L"keine";
+static std::wstring HotkeyName(UINT vk, UINT mods) {
+    if (!vk) return L"keine";
     std::wstring s;
-    if (g.hotMods & MOD_CONTROL) s += L"Strg+";
-    if (g.hotMods & MOD_ALT) s += L"Alt+";
-    if (g.hotMods & MOD_SHIFT) s += L"Umschalt+";
-    if (g.hotMods & MOD_WIN) s += L"Win+";
-    UINT sc = MapVirtualKeyW(g.hotVk, MAPVK_VK_TO_VSC);
+    if (mods & MOD_CONTROL) s += L"Strg+";
+    if (mods & MOD_ALT) s += L"Alt+";
+    if (mods & MOD_SHIFT) s += L"Umschalt+";
+    if (mods & MOD_WIN) s += L"Win+";
+    UINT sc = MapVirtualKeyW(vk, MAPVK_VK_TO_VSC);
     LONG lp = (LONG)(sc << 16);
-    switch (g.hotVk) {  // Navigationstasten sind "erweiterte" Tasten
+    switch (vk) {  // Navigationstasten sind "erweiterte" Tasten
     case VK_PRIOR: case VK_NEXT: case VK_END: case VK_HOME: case VK_INSERT: case VK_DELETE:
     case VK_LEFT: case VK_RIGHT: case VK_UP: case VK_DOWN: case VK_DIVIDE: case VK_NUMLOCK:
         lp |= 1 << 24;
     }
     wchar_t name[64] = {};
     if (GetKeyNameTextW(lp, name, 64) > 0) s += name;
-    else s += L"Taste " + std::to_wstring(g.hotVk);
+    else s += L"Taste " + std::to_wstring(vk);
     return s;
 }
 
@@ -2886,7 +2903,7 @@ static void DrawHit(HDC dc, const Hit& h, bool hot, int cardHot) {
                                             L"Leiste und Tasten steuern Spotify, Play startet es",
                                             L"Musik auf 10 %, solange YouTube & Co. Ton ausgeben",
                                             L"Ende halten + Pos1 / Bild auf / Bild ab",
-                                            L"Alt+Ende lädt den YouTube-Link der offenen Seite",
+                                            L"Lädt den YouTube-Link der offenen Seite",
                                             g.musicOn ? L"Musikleiste unten in der HoverBar" : L"Aus: keine Musikleiste, keine Musik-Tasten",
                                             L"Spielzeit, zuletzt gespielt und Größe von Steam",
                                             L"Größe und protokollierte Spielzeit vom Epic Launcher",
@@ -2972,6 +2989,10 @@ static void DrawHit(HDC dc, const Hit& h, bool hot, int cardHot) {
         FillCircle(dc, on ? h.rc.right - S(4) - kr : h.rc.left + S(4) + kr, (h.rc.top + h.rc.bottom) / 2, kr, RGB(250, 250, 252));
         break;
     }
+    case HT::GrabKeyBtn:
+        FillRound(dc, h.rc, S(10), g.grabCapture ? cAccent : hot ? cHover : cSearch);
+        Text(dc, g.grabCapture ? L"Taste drücken …" : HotkeyName(g.grabVk, g.grabMods), h.rc, g.fSmall, cText, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        break;
     case HT::SetSwatch: {
         bool isPreset = false;
         for (int k = 0; k < kSwatchCount; k++)
@@ -3006,7 +3027,7 @@ static void DrawHit(HDC dc, const Hit& h, bool hot, int cardHot) {
     case HT::SetButton:
         if (h.idx == 3) {  // Taste zum Öffnen
             FillRound(dc, h.rc, S(10), g.hotCapture ? cAccent : hot ? cHover : cSearch);
-            Text(dc, g.hotCapture ? L"Taste drücken …  (Esc = keine)" : HotkeyName(), h.rc, g.hotCapture ? g.fHead : g.fText, cText,
+            Text(dc, g.hotCapture ? L"Taste drücken …  (Esc = keine)" : HotkeyName(g.hotVk, g.hotMods), h.rc, g.hotCapture ? g.fHead : g.fText, cText,
                  DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
             break;
         }
@@ -3492,6 +3513,10 @@ static void DrawHit(HDC dc, const Hit& h, bool hot, int cardHot) {
         Text(dc, L"alle anzeigen", {h.rc.left + S(4), iy + isz + S(5), h.rc.right - S(4), h.rc.bottom - S(3)}, g.fSmall, cDim, DT_CENTER | DT_SINGLELINE);
         break;
     }
+    case HT::MSort:
+        FillRound(dc, h.rc, S(22), hot ? cCardHot : cCard);
+        Text(dc, g.sortPlays ? L"Meistgespielt" : L"Nach Titel", h.rc, g.fText, cText, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        break;
     case HT::MPlayAll: {
         FillRound(dc, h.rc, S(22), hot ? RGB(120, 180, 255) : cAccent);
         {   // Play-Symbol (Symbolschrift) + Text, zusammen mittig
@@ -4996,6 +5021,7 @@ static void FinishClose() {
     Pool_Stop();       // Hilfs-Threads beenden
     FreeCovers();
     KillTimer(g.hwnd, T_PLAYER);
+    if (g.grabCapture) { g.grabCapture = false; RegisterGrabKey(); }  // Aufnahme abgebrochen
     g.pausedMinutes = 0;
     if (Player_State().active) SetTimer(g.hwnd, T_PIDLE, 60000, nullptr);  // pausierte Musik nach 10 Min. beenden
     Media_Close();
@@ -7077,6 +7103,12 @@ static void Activate(int hitIdx, bool right) {
     case HT::MPlayAll:
         PlayList(h.idx, 0);
         break;
+    case HT::MSort:
+        g.sortPlays = !g.sortPlays;
+        IniSet(L"Musik", L"NachWiedergaben", g.sortPlays ? L"1" : L"0");
+        BuildMusic();
+        Refresh();
+        break;
     case HT::MusicJob:
         Music_ClearFinishedJobs();
         Refresh();
@@ -7202,7 +7234,7 @@ static void Activate(int hitIdx, bool right) {
                 if (g.mediaArt) { DeleteObject(g.mediaArt); g.mediaArt = nullptr; }
                 UnregisterHotKey(g.hwnd, 5);
             } else {
-                if (g.grabKey) RegisterHotKey(g.hwnd, 5, MOD_ALT | MOD_NOREPEAT, VK_END);
+                RegisterGrabKey();
                 if (SpotifyMode() && g.open) Media_Open(g.hwnd, S(kBarArt));
             }
         } else if (h.idx == 12) {
@@ -7216,8 +7248,8 @@ static void Activate(int hitIdx, bool right) {
         } else if (h.idx == 14) {
             g.grabKey = !g.grabKey;
             IniSet(L"Funktionen", L"LinkTaste", g.grabKey ? L"1" : L"0");
-            if (g.grabKey && g.musicOn) RegisterHotKey(g.hwnd, 5, MOD_ALT | MOD_NOREPEAT, VK_END);
-            else UnregisterHotKey(g.hwnd, 5);
+            UnregisterHotKey(g.hwnd, 5);
+            RegisterGrabKey();
         } else {
             g.onlyDesktop = !g.onlyDesktop;
             IniSet(L"Einstellungen", L"NurDesktop", g.onlyDesktop ? L"1" : L"0");
@@ -7236,6 +7268,12 @@ static void Activate(int hitIdx, bool right) {
     case HT::SetSpeed:
         g.animSpeed = h.idx;
         IniSet(L"Einstellungen", L"Tempo", std::to_wstring(h.idx).c_str());
+        Render();
+        break;
+    case HT::GrabKeyBtn:  // neue Taste für "Link laden" aufnehmen (nochmal klicken = abbrechen)
+        g.grabCapture = !g.grabCapture;
+        UnregisterHotKey(g.hwnd, 5);
+        if (!g.grabCapture) RegisterGrabKey();
         Render();
         break;
     case HT::SetButton:
@@ -7785,8 +7823,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         SetTimer(hwnd, T_POLL, kPollMs, nullptr);
         // Taste anmelden; hält der Wächter sie noch kurz, gleich nochmal versuchen
         if (g.hotVk && !RegisterHotKey(hwnd, 1, g.hotMods | MOD_NOREPEAT, g.hotVk)) SetTimer(hwnd, T_HOTKEY, 300, nullptr);
-        if (g.grabKey && g.musicOn && !RegisterHotKey(hwnd, 5, MOD_ALT | MOD_NOREPEAT, VK_END))  // markierten Link als Song laden
-            Log((L"Alt+Ende konnte nicht belegt werden (Fehler " + std::to_wstring(GetLastError()) + L") – ein anderes Programm nutzt die Tastenkombination").c_str());
+        if (!RegisterGrabKey())  // markierten Link als Song laden
+            Log((L"Link-Taste konnte nicht belegt werden (Fehler " + std::to_wstring(GetLastError()) + L") – ein anderes Programm nutzt die Tastenkombination").c_str());
         Media_SetSpotifyOnly(SpotifyMode());
         Games_Init(hwnd, g.ini);
         LoadLinks();  // Favoriten-Links, fehlende Website-Symbole im Hintergrund holen
@@ -8223,17 +8261,22 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             // Auswahl im vorderen Programm kopieren: Strg drücken, Alt loslassen (kein Menü), C, Strg los
             sClipHad = ClipText(sClipOld);
             sClipSeq = GetClipboardSequenceNumber();
-            INPUT in[5] = {};
-            for (auto& i : in) i.type = INPUT_KEYBOARD;
-            in[0].ki.wVk = VK_CONTROL;
-            in[1].ki.wVk = VK_MENU;
-            in[1].ki.dwFlags = KEYEVENTF_KEYUP;
-            in[2].ki.wVk = 'C';
-            in[3].ki.wVk = 'C';
-            in[3].ki.dwFlags = KEYEVENTF_KEYUP;
-            in[4].ki.wVk = VK_CONTROL;
-            in[4].ki.dwFlags = KEYEVENTF_KEYUP;
-            SendInput(5, in, sizeof(INPUT));
+            std::vector<INPUT> in;
+            auto key = [&](WORD vk, bool up) {
+                INPUT i = {};
+                i.type = INPUT_KEYBOARD;
+                i.ki.wVk = vk;
+                i.ki.dwFlags = up ? KEYEVENTF_KEYUP : 0;
+                in.push_back(i);
+            };
+            key(VK_CONTROL, false);
+            if (g.grabMods & MOD_ALT) key(VK_MENU, true);
+            if (g.grabMods & MOD_SHIFT) key(VK_SHIFT, true);
+            if (g.grabMods & MOD_WIN) key(VK_LWIN, true);
+            key('C', false);
+            key('C', true);
+            key(VK_CONTROL, true);
+            SendInput((UINT)in.size(), in.data(), sizeof(INPUT));
             sGrabTicks = 1;
             SetTimer(hwnd, T_GRAB, 50, nullptr);
             return 0;
@@ -8266,10 +8309,19 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         SetTimer(hwnd, T_ENDHOLD, 30, nullptr);
         return 0;
     case WM_APP_MUSIC:
-        if (wp == MUSIC_SONG) {
+        if (wp == MUSIC_PLAYED) {
+            auto* id = (std::wstring*)lp;
+            int i = Music_Find(*id);
+            delete id;
+            if (i >= 0) {
+                Music_Songs()[i].plays++;
+                Music_Save();
+                // Reihenfolge erst beim nächsten Öffnen neu: Zeilen sollen nicht unter der Maus wegspringen
+            }
+        } else if (wp == MUSIC_SONG) {
             auto* s = (Song*)lp;
             int i = Music_Find(s->id);
-            if (i >= 0) Music_Songs()[i] = *s;
+            if (i >= 0) { s->plays = Music_Songs()[i].plays; Music_Songs()[i] = *s; }
             else Music_Songs().push_back(*s);
             delete s;
             Music_Save();
@@ -8421,6 +8473,32 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
     case WM_SYSKEYDOWN:
     case WM_KEYDOWN:
+        if (g.grabCapture) {
+            if (wp == VK_SHIFT || wp == VK_CONTROL || wp == VK_MENU || wp == VK_LWIN || wp == VK_RWIN) return 0;
+            if (wp != VK_ESCAPE) {  // Esc = alte Taste behalten
+                UINT mods = ((GetKeyState(VK_CONTROL) & 0x8000) ? MOD_CONTROL : 0) | ((GetKeyState(VK_MENU) & 0x8000) ? MOD_ALT : 0) |
+                            ((GetKeyState(VK_SHIFT) & 0x8000) ? MOD_SHIFT : 0) |
+                            (((GetKeyState(VK_LWIN) | GetKeyState(VK_RWIN)) & 0x8000) ? MOD_WIN : 0);
+                // eine nackte Buchstabentaste würde das Tippen überall blockieren
+                if (!(mods & (MOD_CONTROL | MOD_ALT | MOD_WIN)) && (wp < VK_F1 || wp > VK_F24)) { MessageBeep(MB_ICONHAND); return 0; }
+                UINT oldVk = g.grabVk, oldMods = g.grabMods;
+                g.grabVk = (UINT)wp;
+                g.grabMods = mods;
+                if (!RegisterHotKey(hwnd, 5, mods | MOD_NOREPEAT, (UINT)wp)) {
+                    g.grabVk = oldVk;
+                    g.grabMods = oldMods;
+                    MessageBeep(MB_ICONHAND);  // belegt: Aufnahme läuft weiter
+                    return 0;
+                }
+                UnregisterHotKey(hwnd, 5);
+                IniSet(L"Einstellungen", L"LinkTasteVk", std::to_wstring(g.grabVk).c_str());
+                IniSet(L"Einstellungen", L"LinkTasteMods", std::to_wstring(g.grabMods).c_str());
+            }
+            g.grabCapture = false;
+            RegisterGrabKey();
+            Render();
+            return 0;
+        }
         if (g.hotCapture) {
             // neue Taste übernehmen (reine Umschalt-/Strg-/Alt-/Win-Tasten abwarten)
             if (wp == VK_SHIFT || wp == VK_CONTROL || wp == VK_MENU || wp == VK_LWIN || wp == VK_RWIN) return 0;

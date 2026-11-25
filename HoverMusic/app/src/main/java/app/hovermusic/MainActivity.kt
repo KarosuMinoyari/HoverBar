@@ -58,9 +58,9 @@ import androidx.core.content.ContextCompat
 private val HoverColors = darkColorScheme(
     primary = Color(0xFF4C8DFF),
     onPrimary = Color.White,
-    background = Color(0xFF14141A),
-    surface = Color(0xFF1E1E28),
-    surfaceVariant = Color(0xFF282833),
+    background = Color(0xFF0E0E13),
+    surface = Color(0xFF191922),
+    surfaceVariant = Color(0xFF24242F),
     onBackground = Color(0xFFF5F5F8),
     onSurface = Color(0xFFF5F5F8),
     onSurfaceVariant = Color(0xFFAFAFBA),
@@ -75,6 +75,17 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme(colorScheme = HoverColors) { App(vm) }
         }
+        if (savedInstanceState == null) handleShare(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        handleShare(intent)
+    }
+
+    private fun handleShare(intent: Intent?) {
+        if (intent?.action != Intent.ACTION_SEND) return
+        Downloader.download(this, intent.getStringExtra(Intent.EXTRA_TEXT).orEmpty())
     }
 }
 
@@ -189,6 +200,14 @@ private fun SetupScreen(vm: MusicViewModel, onPick: () -> Unit) {
             Button(onClick = onPick, modifier = Modifier.fillMaxWidth()) { Text("Ordner „${s.folder}“ wählen") }
             TextButton(onClick = { vm.clearSetup() }) { Text("Neu scannen") }
         }
+        Spacer(Modifier.height(20.dp))
+        val tool by Downloader.toolVersion.collectAsState()
+        val toolStatus by Downloader.status.collectAsState()
+        Text(
+            toolStatus ?: tool?.let { "YouTube-Downloader (yt-dlp $it) ist bereit ✓" } ?: "YouTube-Downloader wird vorbereitet …",
+            color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center, fontSize = 13.sp,
+        )
+        if (tool == null) TextButton(onClick = { Downloader.prepare(ctx, update = true) }) { Text("Erneut versuchen") }
         message?.let {
             Spacer(Modifier.height(12.dp))
             Text(it, color = Color(0xFFFF9696), textAlign = TextAlign.Center, fontSize = 13.sp)

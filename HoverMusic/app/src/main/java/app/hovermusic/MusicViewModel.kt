@@ -25,6 +25,9 @@ class MusicViewModel(app: Application) : AndroidViewModel(app) {
     private val prefs = Prefs(app)
 
     val library = MutableStateFlow<Library?>(null)
+    private var cloud: Library? = null  // nur die Songs vom PC; library = cloud + Downloads auf dem Handy
+    val sortByPlays = MutableStateFlow(prefs.sortByPlays)
+    val playsTick = MutableStateFlow(0)
     val loading = MutableStateFlow(false)
     val error = MutableStateFlow<String?>(null)
     val hasFolder = MutableStateFlow(prefs.treeUri != null)
@@ -44,7 +47,10 @@ class MusicViewModel(app: Application) : AndroidViewModel(app) {
     private var controller: MediaController? = null
 
     init {
-        prefs.jsonCache?.let { runCatching { library.value = LibraryLoader.parseCached(it) } }
+        prefs.jsonCache?.let { runCatching { cloud = LibraryLoader.parseCached(it) } }
+        publish()
+        viewModelScope.launch { Downloader.finished.collect { publish() } }
+        Downloader.prepare(app)  // beim ersten Start gleich die neueste yt-dlp-Version holen
         connect()
         if (prefs.treeUri != null) refresh()
         viewModelScope.launch {
@@ -91,7 +97,8 @@ class MusicViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 val loaded = withContext(Dispatchers.IO) { LibraryLoader.load(getApplication(), Uri.parse(tree)) }
                 prefs.jsonCache = loaded.rawJson
-                library.value = loaded.library
+                cloud = loaded.library
+                publish()
                 if (!prefs.favoritesSeeded) {  // einmalig: Favoriten vom PC übernehmen
                     prefs.setFavorites((prefs.favorites() + loaded.library.pcFavorites).distinct())
                     favorites.value = prefs.favorites()
@@ -103,6 +110,24 @@ class MusicViewModel(app: Application) : AndroidViewModel(app) {
             }
             loading.value = false
         }
+    }
+
+    private fun publish() {
+        val local = Downloader.localSongs(getApplication())
+        val base = cloud
+        library.value = when {
+            local.isEmpty() -> base
+            base == null -> Library(local, emptyList(), emptyList(), "")
+            else -> base.copy(songs = base.songs + local)
+        }
+    }
+
+    /** Wiedergaben vom PC plus die auf diesem Handy. */
+    fun plays(s: Song): Int = s.pcPlays + prefs.plays(s.id)
+
+    fun toggleSort() {
+        sortByPlays.value = !sortByPlays.value
+        prefs.sortByPlays = sortByPlays.value
     }
 
     fun songs(ids: List<String>): List<Song> {
@@ -153,6 +178,7 @@ class MusicViewModel(app: Application) : AndroidViewModel(app) {
         lyrics.value = Lyrics.EMPTY
         if (id != null) {
             addRecent(id)
+            playsTick.value++
             loadLyrics(id)
         }
     }
