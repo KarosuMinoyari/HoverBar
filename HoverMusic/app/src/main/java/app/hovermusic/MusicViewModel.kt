@@ -38,6 +38,9 @@ class MusicViewModel(app: Application) : AndroidViewModel(app) {
     val mode = MutableStateFlow(PlayMode.Off)
     val lyrics = MutableStateFlow(Lyrics.EMPTY)
 
+    /** Einrichtung aus dem QR-Code von HoverBar (Cloud-Dienst, Ordner); bleibt gespeichert, bis der Ordner gewählt ist. */
+    val setup = MutableStateFlow(prefs.setupJson?.let { SetupInfo.fromJson(it) })
+
     private var controller: MediaController? = null
 
     init {
@@ -57,6 +60,19 @@ class MusicViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // ------------------------------------------------------------ Ordner und Bibliothek
+
+    /** Text aus dem QR-Code oder einem eingefügten Link übernehmen. False, wenn es kein HoverBar-Code ist. */
+    fun applySetup(text: String): Boolean {
+        val s = SetupInfo.parse(text.trim()) ?: return false
+        prefs.setupJson = s.toJson()
+        setup.value = s
+        return true
+    }
+
+    fun clearSetup() {
+        prefs.setupJson = null
+        setup.value = null
+    }
 
     fun setFolder(uri: Uri) {
         runCatching {

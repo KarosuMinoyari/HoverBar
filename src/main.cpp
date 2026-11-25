@@ -29,6 +29,7 @@
 #include "plugins.h"
 #include "chat.h"
 #include "update.h"
+#include "qrcode.h"
 #include <map>
 #include <thread>
 #include <mutex>
@@ -41,6 +42,10 @@
 static const wchar_t* kClass = L"HoverBarWindow";
 static const wchar_t* kRunKey = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 static const wchar_t* kRunName = L"HoverBar";
+// Cloud-Programm installieren (Musik-Sync): Stand für die Anzeige auf der Karte
+static std::mutex sCloudMu;
+static int sCloudState = 0;  // 0 nichts, 1 läuft, 2 fertig, 3 Fehler
+static std::wstring sCloudMsg;
 
 enum { WM_APP_LIST = WM_APP + 1, WM_APP_ICON, WM_APP_DONE, WM_APP_SHOW };
 enum { WM_APP_SCROLLGO = WM_APP + 70, WM_APP_FAVICON };
@@ -377,6 +382,8 @@ struct State {
     bool claudeOn = false;         // Erweiterung "Claude-Chat" hinzugefügt (Vorgeschlagen)
     bool syncOn = false;           // Erweiterung "Musik-Sync" eingerichtet
     std::wstring syncDir, syncNote;  // Cloud-Ordner der Songs; Hinweis auf der Karte
+    std::wstring syncCloud, syncPkg, syncParent;  // gewählter Dienst, sein Android-Paketname, Elternordner (für den QR-Code fürs Handy)
+    bool syncShowQr = false;       // nach dem Verschieben den QR-Code zeigen
     // Spielmodus-Ordner: Statistiken je App (nur solange die Ansicht offen ist)
     // Kopfzeile: WLAN/Netz, Akku, Logo
     int net = 0, netBars = 0;      // 0 kein Netz, 1 WLAN, 2 LAN, 3 Mobilfunk; Balken 0..4
@@ -607,6 +614,9 @@ static void InitIni() {
     g.claudeOn = GetPrivateProfileIntW(L"Erweiterungen", L"Claude", 0, g.ini.c_str()) != 0;
     g.syncOn = GetPrivateProfileIntW(L"Erweiterungen", L"MusikSync", 0, g.ini.c_str()) != 0;
     g.syncDir = IniGet(L"Erweiterungen", L"MusikSyncOrdner");
+    g.syncCloud = IniGet(L"Erweiterungen", L"MusikSyncCloud");
+    g.syncPkg = IniGet(L"Erweiterungen", L"MusikSyncPaket");
+    g.syncParent = IniGet(L"Erweiterungen", L"MusikSyncElternordner");
     Music_SetSyncExport(g.syncOn);
     Music_SetFolder(IniGet(L"Funktionen", L"SongOrdner"));  // leer = Musik\HoverBar
     g.shuffle = GetPrivateProfileIntW(L"Einstellungen", L"Zufall", 0, g.ini.c_str()) != 0;
@@ -1536,11 +1546,14 @@ static void LayoutSuggested(int W, int pad, int y0) {
         y += ch2 + S(12);
     }
     {   // Musik-Sync: Songs und Playlists in einem Cloud-Ordner
-        int ch3 = S(190);
+        int ch3 = S(216);
         g.hits.push_back({{pad, y, pad + cw, y + ch3}, HT::PlugCard, 2});
         int by3 = y + ch3 - S(14) - bh;
         g.hits.push_back({{pad + cw - S(16) - bw, by3, pad + cw - S(16), by3 + bh}, HT::PlugBtn, 20});  // Einrichten / Jetzt abgleichen
-        if (g.syncOn) g.hits.push_back({{pad + cw - S(16) - 2 * bw - S(10), by3, pad + cw - S(16) - bw - S(10), by3 + bh}, HT::PlugBtn, 21});  // Ausschalten
+        if (g.syncOn) {
+            g.hits.push_back({{pad + cw - S(16) - 2 * bw - S(10), by3, pad + cw - S(16) - bw - S(10), by3 + bh}, HT::PlugBtn, 21});  // Ausschalten
+            g.hits.push_back({{pad + cw - S(16) - 3 * bw - S(20), by3, pad + cw - S(16) - 2 * bw - S(20), by3 + bh}, HT::PlugBtn, 22});  // Handy verbinden
+        }
         y += ch3 + S(12);
     }
     g.contentH = y - y0;
@@ -3047,12 +3060,22 @@ static void DrawHit(HDC dc, const Hit& h, bool hot, int cardHot) {
             Text(dc, L"Playlists und Favoriten stehen in HoverBar-Bibliothek.json, Cover im Unterordner Cover.",
                  {h.rc.left + S(18), h.rc.top + S(96), h.rc.right - S(18), h.rc.top + S(116)}, g.fSmall, cDim, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
             SyncStatus ss = Music_SyncStatus();
-            std::wstring st = ss.state == 1 ? L"Verschiebe Songs … " + std::to_wstring(ss.done) + L" / " + std::to_wstring(ss.total)
+            int cs;
+            std::wstring cloudMsg;
+            {
+                std::lock_guard<std::mutex> lk(sCloudMu);
+                cs = sCloudState;
+                cloudMsg = sCloudMsg;
+            }
+            std::wstring st = cs == 1 ? cloudMsg
+                            : ss.state == 1 ? L"Verschiebe Songs … " + std::to_wstring(ss.done) + L" / " + std::to_wstring(ss.total)
                             : ss.state == 3 ? ss.msg
                             : g.syncOn ? L"Aktiv: " + g.syncDir + (Music_SyncInfo().empty() ? L"" : L" · " + Music_SyncInfo())
+                            : (cs == 2 || cs == 3) ? cloudMsg
                             : g.syncNote.empty() ? L"Nicht eingerichtet" : g.syncNote;
-            Text(dc, st, {h.rc.left + S(18), h.rc.bottom - S(50), h.rc.right - S(340), h.rc.bottom - S(14)}, g.fSmall,
-                 ss.state == 3 ? RGB(255, 150, 150) : g.syncOn ? RGB(110, 210, 140) : cDim, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_PATH_ELLIPSIS);
+            bool bad = cs == 3 || ss.state == 3;
+            Text(dc, st, {h.rc.left + S(18), h.rc.bottom - S(92), h.rc.right - S(18), h.rc.bottom - S(58)}, g.fSmall,
+                 bad ? RGB(255, 150, 150) : (g.syncOn || cs == 2) ? RGB(110, 210, 140) : cDim, DT_LEFT | DT_VCENTER | DT_WORDBREAK | DT_END_ELLIPSIS);
             break;
         }
         FillRound(dc, h.rc, S(18), cCard);
@@ -3081,9 +3104,12 @@ static void DrawHit(HDC dc, const Hit& h, bool hot, int cardHot) {
         PlugStatus ps = WizTree_Status();
         bool busy = ps.state == PLUG_WORKING || ps.state == PLUG_DOWNLOADING;
         bool have = !WizTree_Exe().empty();
-        if (h.idx == 20 || h.idx == 21) {  // Musik-Sync
+        if (h.idx == 20 || h.idx == 21 || h.idx == 22) {  // Musik-Sync
             SyncStatus ss = Music_SyncStatus();
-            if (h.idx == 21) {
+            if (h.idx == 22) {
+                FillRound(dc, h.rc, S(10), hot ? cHover : cSearch);
+                Text(dc, L"Handy verbinden", h.rc, g.fSmall, cText, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            } else if (h.idx == 21) {
                 FillRound(dc, h.rc, S(10), hot ? RGB(200, 60, 60) : cSearch);
                 Text(dc, L"Ausschalten", h.rc, g.fSmall, hot ? RGB(255, 255, 255) : RGB(255, 150, 150), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             } else {
@@ -6009,7 +6035,180 @@ static int SetSongFolder(const std::wstring& path, bool moveExisting) {
 struct CloudProv {
     std::wstring name, quota, url, base;  // Anzeigename, gratis-Speicher, Download-Seite, Basisordner (leer = nicht installiert)
     bool reportsFree = false;             // zeigt das Laufwerk den freien Cloud-Speicher? (Google Drive, pCloud)
+    std::wstring wingetId;                // Paket im Windows-Paketmanager (leer = nur Download-Seite öffnen)
+    std::wstring androidPkg;              // Paketname der Android-App (für die Handy-Einrichtung)
+    std::wstring parentHint;              // Ordner zwischen Cloud-Wurzel und HoverBar-Musik (z. B. "Meine Ablage")
 };
+
+// ---------------------------------------------------------------- Handy verbinden: QR-Code für die Einrichtung von HoverMusic
+static std::string Utf8Of(const std::wstring& w) {
+    if (w.empty()) return {};
+    int n = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), nullptr, 0, nullptr, nullptr);
+    std::string s(n, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), &s[0], n, nullptr, nullptr);
+    return s;
+}
+static std::string JsonText(const std::wstring& w) {  // für Strings in der Einrichtungs-JSON
+    std::string s = Utf8Of(w), o;
+    for (char c : s) {
+        if (c == '"' || c == '\\') o += '\\';
+        if ((unsigned char)c >= 0x20) o += c;
+    }
+    return o;
+}
+static std::string B64Url(const std::string& in) {
+    static const char* t = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    std::string o;
+    size_t i = 0;
+    for (; i + 2 < in.size(); i += 3) {
+        unsigned v = (unsigned char)in[i] << 16 | (unsigned char)in[i + 1] << 8 | (unsigned char)in[i + 2];
+        o += t[v >> 18 & 63]; o += t[v >> 12 & 63]; o += t[v >> 6 & 63]; o += t[v & 63];
+    }
+    if (i + 1 == in.size()) {
+        unsigned v = (unsigned char)in[i] << 16;
+        o += t[v >> 18 & 63]; o += t[v >> 12 & 63];
+    } else if (i + 2 == in.size()) {
+        unsigned v = (unsigned char)in[i] << 16 | (unsigned char)in[i + 1] << 8;
+        o += t[v >> 18 & 63]; o += t[v >> 12 & 63]; o += t[v >> 6 & 63];
+    }
+    return o;
+}
+// Inhalt des QR-Codes: ein Link auf die HoverMusic-Downloadseite (so führt auch die normale Handy-Kamera zur App),
+// im Teil hinter "#hm=" steht die Einrichtung (Dienst, Android-Paket, Ordner) für die Scan-Funktion in HoverMusic. Keine Zugangsdaten, keine Pfade vom PC.
+static std::string PhoneSetupUrl() {
+    std::wstring folder = g.syncDir.empty() ? L"HoverBar-Musik" : g.syncDir.substr(g.syncDir.find_last_of(L'\\') + 1);
+    std::string json = "{\"v\":1,\"cloud\":\"" + JsonText(g.syncCloud) + "\",\"folder\":\"" + JsonText(folder) + "\",\"pkg\":\"" + JsonText(g.syncPkg) +
+                       "\",\"parent\":\"" + JsonText(g.syncParent) + "\"}";
+    return "https://github.com/KarosuMinoyari/HoverBar/releases#hm=" + B64Url(json);
+}
+
+static HWND sQrWnd = nullptr;
+static QrCode sQr;
+static LRESULT CALLBACK QrProc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    switch (m) {
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        HDC dc = BeginPaint(h, &ps);
+        RECT rc;
+        GetClientRect(h, &rc);
+        HBRUSH bg = CreateSolidBrush(RGB(24, 24, 30));
+        FillRect(dc, &rc, bg);
+        DeleteObject(bg);
+        SetBkMode(dc, TRANSPARENT);
+        SelectObject(dc, g.fTitle);
+        SetTextColor(dc, RGB(245, 245, 248));
+        RECT t = {S(24), S(16), rc.right - S(24), S(54)};
+        DrawTextW(dc, L"Handy verbinden", -1, &t, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+        int quiet = 4, mods = sQr.size + 2 * quiet, px = std::max(3, S(300) / mods), total = px * mods;
+        int x0 = (rc.right - total) / 2, y0 = S(66);
+        HBRUSH white = CreateSolidBrush(RGB(255, 255, 255)), black = CreateSolidBrush(RGB(0, 0, 0));
+        RECT wr = {x0, y0, x0 + total, y0 + total};
+        FillRect(dc, &wr, white);
+        for (int y = 0; y < sQr.size; y++)
+            for (int x = 0; x < sQr.size; x++)
+                if (sQr.dark(x, y)) {
+                    RECT r = {x0 + (x + quiet) * px, y0 + (y + quiet) * px, x0 + (x + quiet + 1) * px, y0 + (y + quiet + 1) * px};
+                    FillRect(dc, &r, black);
+                }
+        DeleteObject(white);
+        DeleteObject(black);
+        std::wstring cloud = g.syncCloud.empty() || g.syncCloud == L"Cloud" ? L"deinen Cloud-Dienst" : g.syncCloud;
+        std::wstring txt = L"1.  HoverMusic aufs Handy: den Code mit der Kamera scannen (öffnet die Download-Seite) und die App installieren.\n\n"
+                           L"2.  In HoverMusic \u201EQR-Code scannen\u201C antippen und diesen Code scannen.\n\n"
+                           L"3.  Die App führt dich weiter: " + cloud + L" auf dem Handy installieren und anmelden, dann den Ordner \u201EHoverBar-Musik\u201C wählen.";
+        SelectObject(dc, g.fText);
+        SetTextColor(dc, RGB(220, 220, 228));
+        RECT a = {S(28), y0 + total + S(18), rc.right - S(28), rc.bottom - S(12)};
+        DrawTextW(dc, txt.c_str(), -1, &a, DT_LEFT | DT_WORDBREAK);
+        EndPaint(h, &ps);
+        return 0;
+    }
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_CLOSE:
+        DestroyWindow(h);
+        return 0;
+    case WM_DESTROY:
+        sQrWnd = nullptr;
+        return 0;
+    }
+    return DefWindowProcW(h, m, w, l);
+}
+static void ShowPhoneQr() {
+    std::string url = PhoneSetupUrl();
+    if (!Qr_Encode(url, true, sQr) && !Qr_Encode(url, false, sQr)) return;
+    static bool reg = false;
+    if (!reg) {
+        WNDCLASSW wc = {};
+        wc.lpfnWndProc = QrProc;
+        wc.hInstance = g.inst;
+        wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+        wc.lpszClassName = L"HoverBarQr";
+        wc.hIcon = LoadIconW(g.inst, MAKEINTRESOURCEW(1));
+        RegisterClassW(&wc);
+        reg = true;
+    }
+    if (sQrWnd) {
+        InvalidateRect(sQrWnd, nullptr, TRUE);
+        ShowWindow(sQrWnd, SW_SHOW);
+        SetForegroundWindow(sQrWnd);
+        return;
+    }
+    RECT r = {0, 0, S(440), S(700)};
+    AdjustWindowRectEx(&r, WS_CAPTION | WS_SYSMENU, FALSE, WS_EX_TOPMOST);
+    int w = r.right - r.left, hgt = r.bottom - r.top;
+    int x = (GetSystemMetrics(SM_CXSCREEN) - w) / 2, y = std::max(0, (GetSystemMetrics(SM_CYSCREEN) - hgt) / 2);
+    sQrWnd = CreateWindowExW(WS_EX_TOPMOST, L"HoverBarQr", L"HoverBar – Handy verbinden", WS_CAPTION | WS_SYSMENU | WS_VISIBLE, x, y, w, hgt, nullptr, nullptr,
+                             g.inst, nullptr);
+    if (sQrWnd) SetForegroundWindow(sQrWnd);
+}
+
+// ---- Cloud-Programm per winget installieren (wie yt-dlp: ein Klick, Fortschritt auf der Karte)
+enum { WM_APP_CLOUD = WM_APP + 100 };
+static bool WingetAvailable() {
+    wchar_t b[MAX_PATH];
+    return SearchPathW(nullptr, L"winget.exe", nullptr, MAX_PATH, b, nullptr) > 0;
+}
+static void CloudSet(int st, const std::wstring& msg) {
+    std::lock_guard<std::mutex> l(sCloudMu);
+    sCloudState = st;
+    sCloudMsg = msg;
+}
+static void StartCloudInstall(const CloudProv& c) {
+    {
+        std::lock_guard<std::mutex> l(sCloudMu);
+        if (sCloudState == 1) return;
+    }
+    CloudSet(1, c.name + L" wird installiert … (Windows fragt eventuell nach Administratorrechten)");
+    struct Job { HWND h; std::wstring name, id; };
+    auto* j = new Job{g.hwnd, c.name, c.wingetId};
+    HANDLE t = CreateThread(nullptr, 0, [](LPVOID p) -> DWORD {
+        auto* j = (Job*)p;
+        std::wstring cmd = L"winget.exe install --id " + j->id + L" -e --source winget --silent --accept-package-agreements --accept-source-agreements";
+        std::vector<wchar_t> buf(cmd.begin(), cmd.end());
+        buf.push_back(0);
+        STARTUPINFOW si = {sizeof(si)};
+        PROCESS_INFORMATION pi = {};
+        if (!CreateProcessW(nullptr, buf.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+            CloudSet(3, L"winget konnte nicht gestartet werden.");
+        } else {
+            DWORD wait = WaitForSingleObject(pi.hProcess, 25 * 60 * 1000), code = 1;
+            GetExitCodeProcess(pi.hProcess, &code);
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
+            wchar_t hex[16];
+            swprintf(hex, 16, L"0x%08X", code);
+            if (wait == WAIT_TIMEOUT) CloudSet(3, L"Die Installation dauert zu lange – abgebrochen.");
+            else if (code == 0) CloudSet(2, j->name + L" ist installiert. Melde dich dort an, danach hier nochmal auf „Einrichten“ klicken.");
+            else CloudSet(3, j->name + L": Installation fehlgeschlagen (winget " + hex + L"). Eventuell wurde die Windows-Rückfrage abgelehnt.");
+        }
+        PostMessageW(j->h, WM_APP_CLOUD, 0, 0);
+        delete j;
+        return 0;
+    }, j, 0, nullptr);
+    if (t) CloseHandle(t);
+    else { delete j; CloudSet(3, L"Konnte nicht starten."); }
+}
 static std::wstring DriveWithLabel(const wchar_t* label) {
     for (wchar_t c = L'D'; c <= L'Z'; c++) {
         wchar_t root[4] = {c, L':', L'\\', 0}, lab[MAX_PATH] = {};
@@ -6031,7 +6230,7 @@ static std::vector<CloudProv> ListClouds() {
     std::vector<CloudProv> v;
     std::wstring home = EnvPath(L"USERPROFILE");
     {   // Google Drive für Desktop: Laufwerk "Google Drive", darin "Meine Ablage" / "My Drive"
-        CloudProv c{L"Google Drive", L"15 GB gratis", L"https://www.google.com/drive/download/", L"", true};
+        CloudProv c{L"Google Drive", L"15 GB gratis", L"https://www.google.com/drive/download/", L"", true, L"Google.GoogleDrive", L"com.google.android.apps.docs", L""};
         std::wstring root = DriveWithLabel(L"Google Drive");
         if (!root.empty()) {
             std::wstring first;
@@ -6046,29 +6245,29 @@ static std::vector<CloudProv> ListClouds() {
                 } while (FindNextFileW(h, &fd));
                 FindClose(h);
             }
-            if (!first.empty()) c.base = root + first;
+            if (!first.empty()) { c.base = root + first; c.parentHint = first; }
         }
         v.push_back(c);
     }
     {
-        CloudProv c{L"OneDrive", L"5 GB gratis, bei Windows dabei", L"https://www.microsoft.com/microsoft-365/onedrive/download", EnvPath(L"OneDrive"), false};
+        CloudProv c{L"OneDrive", L"5 GB gratis, bei Windows dabei", L"https://www.microsoft.com/microsoft-365/onedrive/download", EnvPath(L"OneDrive"), false, L"Microsoft.OneDrive", L"com.microsoft.skydrive", L""};
         if (!DirExists(c.base)) c.base.clear();
         v.push_back(c);
     }
     {
-        CloudProv c{L"Koofr", L"10 GB gratis, kleiner Anbieter", L"https://koofr.eu/desktop-apps/", L"", false};
+        CloudProv c{L"Koofr", L"10 GB gratis, kleiner Anbieter", L"https://koofr.eu/desktop-apps/", L"", false, L"", L"net.koofr.android.app", L""};
         for (const wchar_t* d : {L"\\Koofr", L"\\Koofr Sync", L"\\Koofr Desktop"})
             if (DirExists(home + d)) { c.base = home + d; break; }
         v.push_back(c);
     }
     {
-        CloudProv c{L"MEGA", L"20 GB gratis", L"https://mega.io/desktop", L"", false};
+        CloudProv c{L"MEGA", L"20 GB gratis", L"https://mega.io/desktop", L"", false, L"Mega.MEGASync", L"mega.privacy.android.app", L""};
         for (const wchar_t* d : {L"\\MEGA", L"\\MEGAsync"})
             if (DirExists(home + d)) { c.base = home + d; break; }
         v.push_back(c);
     }
     {
-        CloudProv c{L"pCloud", L"10 GB gratis", L"https://www.pcloud.com/download-free-online-cloud-file-storage.html", L"", true};
+        CloudProv c{L"pCloud", L"10 GB gratis", L"https://www.pcloud.com/download-free-online-cloud-file-storage.html", L"", true, L"pCloudAG.pCloudDrive", L"com.pcloud.pcloud", L""};
         std::wstring root = DriveWithLabel(L"pCloud Drive");
         if (root.empty()) root = DriveWithLabel(L"pCloud");
         if (!root.empty() && DirExists(root + L"Sync")) c.base = root + L"Sync";
@@ -6076,7 +6275,7 @@ static std::vector<CloudProv> ListClouds() {
         v.push_back(c);
     }
     {
-        CloudProv c{L"Dropbox", L"2 GB gratis", L"https://www.dropbox.com/install", home + L"\\Dropbox", false};
+        CloudProv c{L"Dropbox", L"2 GB gratis", L"https://www.dropbox.com/install", home + L"\\Dropbox", false, L"Dropbox.Dropbox", L"com.dropbox.android", L""};
         if (!DirExists(c.base)) c.base.clear();
         v.push_back(c);
     }
@@ -6101,7 +6300,7 @@ static void SyncSetupFlow() {
             if (c.reportsFree && GetDiskFreeSpaceExW(c.base.c_str(), &fr, &tot, &fa)) free = L", " + FmtGB(fr.QuadPart) + L" frei";
             label = L"✓  " + c.name + L"  (" + c.quota + free + L")";
         } else {
-            label = c.name + L" herunterladen …  (" + c.quota + L")";
+            label = c.name + (!c.wingetId.empty() && WingetAvailable() ? L" installieren …  (" : L" herunterladen (Seite öffnen) …  (") + c.quota + L")";
         }
         AppendMenuW(m, MF_STRING, i + 1, label.c_str());
     }
@@ -6110,7 +6309,7 @@ static void SyncSetupFlow() {
     int cmd = TrackMenu(m);
     if (cmd <= 0) return;
 
-    std::wstring dir, cloudName;
+    std::wstring dir, cloudName, pkg, parent;
     bool reportsFree = false;
     if (cmd == 100) {
         IFileOpenDialog* dlg = nullptr;
@@ -6134,16 +6333,26 @@ static void SyncSetupFlow() {
         dlg->Release();
         if (dir.empty()) return;
         cloudName = L"deinem Ordner";
+        parent = dir.substr(dir.find_last_of(L'\\') == std::wstring::npos ? 0 : dir.find_last_of(L'\\') + 1);
         dir += L"\\HoverBar-Musik";
     } else {
         auto& c = clouds[cmd - 1];
-        if (c.base.empty()) {  // nicht installiert: Download-Seite öffnen, danach hier nochmal "Einrichten"
-            ShellExecuteW(nullptr, L"open", c.url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-            g.syncNote = L"Lade " + c.name + L" und melde dich an, danach hier nochmal auf „Einrichten“ klicken.";
+        if (c.base.empty()) {  // nicht installiert: per winget installieren (ein Klick), sonst Download-Seite öffnen
+            if (!c.wingetId.empty() && WingetAvailable()) {
+                if (ConfirmBox(c.name + L" jetzt installieren?\n\nHoverBar nutzt dafür den Windows-Paketmanager winget (Paket \"" + c.wingetId +
+                               L"\", vom Hersteller, mit Prüfsumme). Windows fragt eventuell nach Administratorrechten.\n\nDanach meldest du dich in " + c.name +
+                               L" an und klickst hier nochmal auf „Einrichten“."))
+                    StartCloudInstall(c);
+            } else {
+                ShellExecuteW(nullptr, L"open", c.url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                g.syncNote = L"Lade " + c.name + L" und melde dich an, danach hier nochmal auf „Einrichten“ klicken.";
+            }
             return;
         }
         dir = c.base + L"\\HoverBar-Musik";
         cloudName = c.name;
+        pkg = c.androidPkg;
+        parent = c.parentHint;
         reportsFree = c.reportsFree;
     }
 
@@ -6185,8 +6394,15 @@ static void SyncSetupFlow() {
     g.syncOn = true;
     g.syncDir = dir;
     g.syncNote.clear();
+    g.syncCloud = cmd == 100 ? L"Cloud" : cloudName;  // für den QR-Code: welcher Dienst, welcher Ordner
+    g.syncPkg = pkg;
+    g.syncParent = parent;
+    g.syncShowQr = true;
     IniSet(L"Erweiterungen", L"MusikSync", L"1");
     IniSet(L"Erweiterungen", L"MusikSyncOrdner", dir.c_str());
+    IniSet(L"Erweiterungen", L"MusikSyncCloud", g.syncCloud.c_str());
+    IniSet(L"Erweiterungen", L"MusikSyncPaket", g.syncPkg.c_str());
+    IniSet(L"Erweiterungen", L"MusikSyncElternordner", g.syncParent.c_str());
     Music_SetFavorites(g.favIds);
     Music_SetSyncExport(true);
     if (Player_State().active) { Player_Stop(); g.pst = PlayerState(); }  // Dateien freigeben
@@ -6793,6 +7009,10 @@ static void Activate(int hitIdx, bool right) {
         Refresh();
         break;
     case HT::PlugBtn: {
+        if (h.idx == 22) {  // Handy verbinden: QR-Code
+            ShowPhoneQr();
+            break;
+        }
         if (h.idx == 20 || h.idx == 21) {  // Musik-Sync
             if (Music_SyncStatus().state == 1) break;
             if (h.idx == 21) {
@@ -6808,6 +7028,7 @@ static void Activate(int hitIdx, bool right) {
                 if (Player_State().active) { Player_Stop(); g.pst = PlayerState(); }
                 Music_SyncSetup(g.hwnd, Music_Folder());
             } else {
+                CloudSet(0, L"");
                 SyncSetupFlow();
             }
             Refresh();
@@ -7759,6 +7980,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             BuildMusic();
             delete r;
             if (g.open && !g.closing) Refresh();
+            if (g.syncShowQr) {  // Einrichtung fertig: QR-Code für die Handy-App zeigen
+                g.syncShowQr = false;
+                ShowPhoneQr();
+            }
         } else if (wp == MUSIC_JOBS) {
             if (g.open && !g.closing && g.view == View::Settings) Render();  // Fortschritt der Musik-Sync-Karte
             if (g.open && !g.closing && g.view == View::Music) Refresh();
@@ -7837,6 +8062,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         return TRUE;
     }
+    case WM_APP_CLOUD:  // Cloud-Programm: Installation beendet / Fortschritt
+        if (g.open && !g.closing && g.view == View::Settings) Render();
+        return 0;
     case WM_APP_UPDATE:  // HoverBar-Update: neuer Stand
         if (g.open && !g.closing && g.view == View::Settings) Render();
         return 0;
@@ -8324,6 +8552,64 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmd, int) {
     if (cmd && wcsstr(cmd, L"--storage")) { showMode = 1; wp = 15; }
     if (cmd && wcsstr(cmd, L"--chat")) { showMode = 1; wp = 16; }
     if (cmd && wcsstr(cmd, L"--nowplaying")) { showMode = 1; wp = 17; }
+    if (cmd && wcsstr(cmd, L"--qrtest ")) {  // Test: QR-Beispiele als Text schreiben (werden in HoverMusic mit ZXing gegengeprüft)
+        std::wstring outFile = wcsstr(cmd, L"--qrtest ") + 9;
+        outFile.erase(std::remove(outFile.begin(), outFile.end(), L'"'), outFile.end());
+        FILE* fp = _wfopen(outFile.c_str(), L"wb");
+        if (fp) {
+            std::vector<std::string> samples = {"A", "HoverBar", "https://github.com/KarosuMinoyari/HoverBar/releases#hm=eyJ2IjoxfQ",
+                                                "Größe & Maß – Müsik für Handy ♪ äöüß", ""};
+            // echte Einrichtungs-Links (so, wie der QR-Code sie enthält), damit HoverMusic sie gegenprüfen kann
+            std::vector<std::string> setupUrls;
+            struct SetupCase { const wchar_t *cloud, *pkg, *parent; };
+            for (auto sc : {SetupCase{L"MEGA", L"mega.privacy.android.app", L""}, SetupCase{L"Google Drive", L"com.google.android.apps.docs", L"Meine Ablage"},
+                            SetupCase{L"Cloud", L"", L"Müsik Ü \"Test\""}}) {
+                g.syncCloud = sc.cloud;
+                g.syncPkg = sc.pkg;
+                g.syncParent = sc.parent;
+                g.syncDir = L"C:\\Users\\jemand\\Ordner\\HoverBar-Musik";
+                setupUrls.push_back(PhoneSetupUrl());
+                samples.push_back(setupUrls.back());
+            }
+            for (int len : {120, 250, 330}) {
+                std::string s = "Lorem ";
+                for (int i = 0; (int)s.size() < len; i++) s += "ipsum" + std::to_string(i * 7919 % 1000) + " ";
+                s.resize(len);
+                samples.push_back(s);
+            }
+            for (auto& s : samples) {
+                if (s.empty()) continue;
+                for (int ecc = 0; ecc < 2; ecc++) {
+                    QrCode q;
+                    if (!Qr_Encode(s, ecc == 1, q)) continue;
+                    fprintf(fp, "T:%s\nE:%c\nV:%d\n", s.c_str(), ecc ? 'M' : 'L', q.version);
+                    for (int y = 0; y < q.size; y++) {
+                        for (int x = 0; x < q.size; x++) fputc(q.dark(x, y) ? '#' : '.', fp);
+                        fputc('\n', fp);
+                    }
+                    fputc('\n', fp);
+                }
+            }
+            for (auto& u : setupUrls) fprintf(fp, "U:%s\n", u.c_str());
+            fclose(fp);
+        }
+        return 0;
+    }
+    if (cmd && wcsstr(cmd, L"--qrfenster")) {  // Test: QR-Fenster mit Beispieldaten zeigen (ändert nichts an der Einrichtung)
+        g.inst = inst;
+        CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+        SetDpi(GetDpiForSystem());
+        g.syncCloud = L"MEGA";
+        g.syncPkg = L"mega.privacy.android.app";
+        g.syncDir = L"C:\\Beispiel\\MEGA\\HoverBar-Musik";
+        ShowPhoneQr();
+        MSG m;
+        while (sQrWnd && GetMessageW(&m, nullptr, 0, 0)) {
+            TranslateMessage(&m);
+            DispatchMessageW(&m);
+        }
+        return 0;
+    }
     if (cmd && wcsstr(cmd, L"--warte-auf ")) {  // nach einem Update: erst warten, bis die alte Leiste beendet ist
         DWORD pid = (DWORD)_wtoi(wcsstr(cmd, L"--warte-auf ") + 12);
         HANDLE ph = pid ? OpenProcess(SYNCHRONIZE, FALSE, pid) : nullptr;

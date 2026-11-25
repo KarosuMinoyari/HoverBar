@@ -50,7 +50,7 @@ Eigener Player für die Songs im Musikordner (Standard `Musik\HoverBar`, änderb
 
 Optional unter Zahnrad → Vorgeschlagen → *Musik-Sync*. Legt deine Songs, Cover und Playlists in einen Ordner deines Cloud-Programms, damit andere Geräte (z. B. eine Handy-App) sie spielen können.
 
-- **Beliebiger Anbieter:** HoverBar erkennt installierte Cloud-Programme (Google Drive, OneDrive, Koofr, MEGA, pCloud, Dropbox) und zeigt bei Google Drive und pCloud den freien Platz. Fehlt ein Dienst, öffnet der Eintrag dessen Download-Seite. Alternativ ein eigener Ordner. Reicht der Platz nicht, bricht HoverBar vor dem Verschieben ab (bei Anbietern, die ihren Speicher nicht als Laufwerk zeigen, steht ein Hinweis).
+- **Beliebiger Anbieter:** HoverBar erkennt installierte Cloud-Programme (Google Drive, OneDrive, Koofr, MEGA, pCloud, Dropbox) und zeigt bei Google Drive und pCloud den freien Platz. Fehlt ein Dienst, installiert ihn ein Klick (Eintrag „… installieren“) über den Windows-Paketmanager winget (Hersteller-Paket mit Prüfsumme, Windows fragt eventuell nach Administratorrechten; danach im Cloud-Programm anmelden und wieder auf „Einrichten“ klicken). Koofr hat kein winget-Paket, dort öffnet der Eintrag die Download-Seite. Alternativ ein eigener Ordner. Reicht der Platz nicht, bricht HoverBar vor dem Verschieben ab (bei Anbietern, die ihren Speicher nicht als Laufwerk zeigen, steht ein Hinweis).
 - **Einrichten:** Die Songs werden im Hintergrund in `<Cloud>\HoverBar-Musik` verschoben, danach spielt HoverBar von dort. Neue Downloads landen ebenfalls dort. Das Cloud-Programm lädt hoch, HoverBar selbst überträgt nichts ins Internet. Nur für die eigene Musik gedacht, nicht zum Teilen.
 - **Bibliotheksdatei:** `HoverBar-Bibliothek.json` im Ordner wird bei jeder Änderung (Songs, Playlists, Favoriten) aktualisiert, nur wenn sich der Inhalt geändert hat. Cover liegen in `Cover/`. Aufbau:
 
@@ -64,14 +64,15 @@ Optional unter Zahnrad → Vorgeschlagen → *Musik-Sync*. Legt deine Songs, Cov
 ```
 
 `file` und `cover` sind relativ zum Ordner. Aufgeführt werden nur Songs, die wirklich im Ordner liegen.
+- **Handy verbinden (QR-Code):** Nach dem Einrichten (und jederzeit über den Knopf „Handy verbinden“) zeigt HoverBar einen QR-Code. Er enthält einen Link auf die HoverMusic-Downloadseite (die normale Handy-Kamera führt also zur App) und dahinter, nach `#hm=`, die Einrichtung als Base64-JSON: `{"v":1,"cloud":"MEGA","folder":"HoverBar-Musik","pkg":"<Android-Paket der Cloud-App>","parent":"<Ordner davor>"}`. Keine Zugangsdaten und keine Pfade vom PC. HoverMusic liest den Code und führt durch die Cloud-App und die Ordnerwahl.
 - **Ausschalten:** Die Songs bleiben im Cloud-Ordner, nur die Bibliotheksdatei wird nicht mehr gepflegt.
-- **Test ohne Rückfragen:** `HoverBar.exe --musiksync <Ordner>` richtet den Sync in einem beliebigen Ordner ein, `--musiksync-aus` schaltet ihn ab (bei laufender HoverBar).
+- **Tests:** `HoverBar.exe --musiksync <Ordner>` richtet den Sync ohne Rückfragen in einem beliebigen Ordner ein, `--musiksync-aus` schaltet ihn ab (bei laufender HoverBar). `--qrtest <Datei>` schreibt QR-Beispiele (HoverMusic dekodiert sie in den Unit-Tests mit ZXing), `--qrfenster` zeigt das QR-Fenster mit Beispieldaten.
 
 ## HoverMusic (Android-App)
 
 Eigene App im Ordner `HoverMusic/` (Kotlin, Jetpack Compose, Media3), mit eigenen Releases: Tags `hovermusic-v…`, Datei `HoverMusic-<Version>.apk` (siehe [Releases](https://github.com/KarosuMinoyari/HoverBar/releases)). Sie spielt die Musik aus dem Musik-Sync von HoverBar auf dem Handy:
 
-- **Einrichten:** In HoverBar am PC *Musik-Sync* einrichten. In HoverMusic einmal den Ordner `HoverBar-Musik` aus deiner Cloud wählen (Android-Ordnerauswahl: Google Drive, OneDrive, MEGA, Koofr … erscheinen dort). Es werden keine Zugangsdaten und keine Cloud-Schnittstellen gebraucht, die App liest nur diesen Ordner.
+- **Einrichten:** In HoverBar am PC *Musik-Sync* einrichten, am Ende erscheint der QR-Code. In HoverMusic „QR-Code scannen“ (nutzt den Code-Scanner der Google Play-Dienste, ohne Kamera-Berechtigung; alternativ „Link aus der Zwischenablage“): Die App führt durch die Installation der Cloud-App auf dem Handy und die Wahl des Ordners `HoverBar-Musik` (Android-Ordnerauswahl: Google Drive, OneDrive, MEGA, Koofr … erscheinen dort). Es werden keine Zugangsdaten und keine Cloud-Schnittstellen gebraucht, die App liest nur diesen Ordner.
 - **Funktionen:** Alle Songs, Favoriten, Playlists, Zuletzt gespielt; „Läuft gerade“ mit großem Cover, Fortschritt, Zurück/Play/Weiter, Zufall/Wiederholen (jeder Klick wechselt: aus → Zufall → Playlist wiederholen → Song wiederholen), Herz; Songtext mit Mitscrollen (Tippen auf eine Zeile springt dorthin, nach 2 s geht es zur aktuellen Zeile zurück); Wiedergabe im Hintergrund mit Steuerung in der Benachrichtigung und auf dem Sperrbildschirm.
 - **Favoriten und „Zuletzt“** liegen lokal auf dem Handy (die Favoriten vom PC werden einmal übernommen). Die Bibliothek wird beim Start und über den Aktualisieren-Knopf neu gelesen und für den Start ohne Netz zwischengespeichert. Die Songs selbst streamt oder lädt der Cloud-Anbieter beim Abspielen; wer sie offline braucht, markiert den Ordner im Cloud-App als „offline verfügbar“.
 - **Installieren:** APK aus dem Release auf dem Handy öffnen und „Installation aus dieser Quelle“ erlauben (die App ist nicht im Play Store). Voraussetzung: Android 8 oder neuer.
@@ -109,7 +110,7 @@ Ergebnis: `build\HoverBar.exe`. Das WebView2-SDK liegt unter `third_party\WebVie
 ## Aufbau
 
 ```
-src/           Quelltext (main.cpp = Oberfläche, music/media/games/plugins/chat/update)
+src/           Quelltext (main.cpp = Oberfläche, music/media/games/plugins/chat/update, qrcode = QR-Encoder)
 res/           Icon, Ressourcen, Skript zum Erzeugen des Icons
 setup/         Installer (setupHoverBar.exe)
 HoverMusic/    Android-App (eigenes Gradle-Projekt)

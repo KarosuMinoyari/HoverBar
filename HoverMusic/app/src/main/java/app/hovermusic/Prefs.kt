@@ -14,6 +14,11 @@ class Prefs(ctx: Context) {
         get() = sp.getString("json", null)
         set(v) { sp.edit().putString("json", v).apply() }
 
+    /** Einrichtung aus dem QR-Code (JSON), bis der Ordner gewählt ist. */
+    var setupJson: String?
+        get() = sp.getString("setup", null)
+        set(v) { sp.edit().putString("setup", v).apply() }
+
     private fun list(key: String): List<String> = (sp.getString(key, "") ?: "").split('|').filter { it.isNotEmpty() }
     private fun setList(key: String, l: List<String>) { sp.edit().putString(key, l.joinToString("|")).apply() }
 
