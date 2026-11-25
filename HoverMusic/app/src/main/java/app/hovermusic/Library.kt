@@ -17,6 +17,8 @@ data class Song(
     val coverUri: Uri?,
     val lyricsUri: Uri?,
     val pcPlays: Int = 0,
+    val trimFromMs: Long = 0,  // Schnitt vom Handy, den der PC noch nicht übernommen hat; 0/0 = keiner
+    val trimToMs: Long = 0,
 )
 
 data class Playlist(val name: String, val songIds: List<String>)
@@ -95,7 +97,7 @@ object LibraryLoader {
             val edits = Edits.parse(cr.openInputStream(u)?.use { it.readBytes().toString(Charsets.UTF_8) } ?: "")
             library = library.copy(songs = library.songs.map { s ->
                 val e = edits[s.id] ?: return@map s
-                s.copy(title = e.title.ifEmpty { s.title }, artist = e.artist, coverUri = covers[e.cover] ?: s.coverUri)
+                s.copy(title = e.title.ifEmpty { s.title }, artist = e.artist, coverUri = covers[e.cover] ?: s.coverUri, trimFromMs = e.fromMs, trimToMs = e.toMs)
             })
         }
         return Loaded(library, text, baseId)

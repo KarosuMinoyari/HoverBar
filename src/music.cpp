@@ -1873,7 +1873,7 @@ bool Music_ExportLibrary() {
 }
 std::wstring Music_SyncInfo() { return g_syncInfo; }
 
-// Zeilen: Song-ID <Tab> Titel <Tab> Künstler <Tab> Cover ("Cover/Name" oder leer). Die Datei kommt aus der Cloud, also prüfen.
+// Zeilen: Song-ID <Tab> Titel <Tab> Künstler <Tab> Cover ("Cover/Name" oder leer) [<Tab> Schnitt von <Tab> bis, in ms, 0 0 = keiner]. Die Datei kommt aus der Cloud, also prüfen.
 bool Music_ImportEdits() {
     if (!g_syncExport) return false;
     std::wstring dir = Music_Folder(), file = dir + L"\\HoverMusic-Aenderungen.txt";
@@ -1884,7 +1884,8 @@ bool Music_ImportEdits() {
     bool read = !data.empty() && ReadFile(h, &data[0], sz, &got, nullptr) && got == sz;
     CloseHandle(h);
     if (!read) return false;
-    bool changed = false, waiting = false;
+    bool changed = false;
+    std::string waiting;  // Zeilen, die noch nicht gehen (Cover noch nicht heruntergeladen, Schnitt fehlgeschlagen)
     for (size_t a = 0; a < data.size();) {
         size_t b = data.find('\n', a);
         if (b == std::string::npos) b = data.size();
@@ -1900,14 +1901,25 @@ bool Music_ImportEdits() {
             p = t + 1;
         }
         if (f.size() < 4 || Music_Find(f[0]) < 0) continue;
-        Music_UpdateMeta(f[0], f[1], f[2]);
-        changed = true;
         const std::wstring& c = f[3];
         if (c.rfind(L"Cover/", 0) == 0 && c.find_first_of(L"/\\", 6) == std::wstring::npos && c.find(L"..") == std::wstring::npos) {
-            if (!Music_SetCoverFromFile(f[0], dir + L"\\Cover\\" + c.substr(6))) waiting = true;  // noch nicht heruntergeladen
+            if (!Music_SetCoverFromFile(f[0], dir + L"\\Cover\\" + c.substr(6))) { waiting += line + "\n"; continue; }
+        }
+        Music_UpdateMeta(f[0], f[1], f[2]);
+        changed = true;
+        double from = f.size() >= 6 ? _wtoi(f[4].c_str()) / 1000.0 : 0, to = f.size() >= 6 ? _wtoi(f[5].c_str()) / 1000.0 : 0;
+        // erst als letztes schneiden: eine Zeile bleibt nur dann liegen, wenn noch nichts geschnitten wurde (sonst doppelt)
+        if (from >= 0 && to > from + 0.5 && !Music_Trim(f[0], from, to, true)) waiting += line + "\n";
+    }
+    if (waiting.empty()) DeleteFileW(file.c_str());
+    else {
+        HANDLE w = CreateFileW(file.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (w != INVALID_HANDLE_VALUE) {
+            DWORD wr = 0;
+            WriteFile(w, waiting.data(), (DWORD)waiting.size(), &wr, nullptr);
+            CloseHandle(w);
         }
     }
-    if (!waiting) DeleteFileW(file.c_str());
     return changed;
 }
 

@@ -6,6 +6,8 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.layout.ContentScale
 import coil.compose.AsyncImage
 import androidx.compose.foundation.background
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -48,7 +50,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 
-/** "Läuft gerade": großes Cover, Fortschritt, Steuerung zentriert, darunter der Songtext (wie in HoverBar). */
+/** "Läuft gerade": oben Cover und Songtext zum Wischen, unten Titel, Fortschritt und Steuerung. */
 @Composable
 fun NowPlayingScreen(vm: MusicViewModel, onClose: () -> Unit) {
     val library by vm.library.collectAsState()
@@ -81,11 +83,27 @@ fun NowPlayingScreen(vm: MusicViewModel, onClose: () -> Unit) {
             IconButton(onClick = onClose) { Icon(HmIcons.Down, "Schließen", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
             if (song != null) IconButton(onClick = { editing = song }) { Icon(HmIcons.Pencil, "Song bearbeiten", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
         }
-        Cover(song, null, Modifier.fillMaxWidth(0.78f).aspectRatio(1f), radius = 22)
-        Spacer(Modifier.height(18.dp))
+        // oben: wischen zwischen Cover (Seite 1) und Songtext (Seite 2)
+        val pager = rememberPagerState { 2 }
+        // die Datei ist ungeschnitten: Zeitstempel im Songtext um den Schnitt verschieben
+        val cut = song?.trimFromMs ?: 0
+        HorizontalPager(pager, Modifier.weight(1f).fillMaxWidth()) { page ->
+            if (page == 0) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Cover(song, null, Modifier.aspectRatio(1f), radius = 22) }
+            } else {
+                LyricsView(lyrics, pos + cut, hasFile = song?.lyricsUri != null, onSeek = { vm.seekTo((it - cut).coerceAtLeast(0)) }, modifier = Modifier.fillMaxSize())
+            }
+        }
+        Row(Modifier.padding(vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            repeat(2) { i ->
+                Box(Modifier.size(7.dp).clip(CircleShape).background(MaterialTheme.colorScheme.onBackground.copy(alpha = if (pager.currentPage == i) 0.9f else 0.3f)))
+            }
+        }
+
+        // unten: Titel und Bedienung
         Text(song?.title ?: "Nichts läuft", fontSize = 22.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center)
         Text(song?.artist ?: "", fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
-
+        Spacer(Modifier.height(8.dp))
         // Fortschritt
         var drag by remember { mutableStateOf<Float?>(null) }
         val frac = drag ?: if (dur > 0) (pos.toFloat() / dur).coerceIn(0f, 1f) else 0f
@@ -129,8 +147,7 @@ fun NowPlayingScreen(vm: MusicViewModel, onClose: () -> Unit) {
                 )
             }
         }
-        Spacer(Modifier.height(8.dp))
-        LyricsView(lyrics, pos, hasFile = song?.lyricsUri != null, onSeek = { vm.seekTo(it) }, modifier = Modifier.weight(1f).fillMaxWidth())
+        Spacer(Modifier.height(16.dp))
     }
     }
 }

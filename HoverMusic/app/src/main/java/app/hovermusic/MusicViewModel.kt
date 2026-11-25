@@ -8,6 +8,7 @@ import androidx.core.content.ContextCompat
 import androidx.compose.runtime.mutableStateOf
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
@@ -136,14 +137,14 @@ class MusicViewModel(app: Application) : AndroidViewModel(app) {
         l.save(getApplication())
     }
 
-    fun editSong(s: Song, title: String, artist: String, cover: Uri?) {
+    fun editSong(s: Song, title: String, artist: String, cover: Uri?, trim: Pair<Long, Long>?) {
         val ctx = getApplication<Application>()
         viewModelScope.launch {
             try {
                 val local = s.id.startsWith("yt:")
                 withContext(Dispatchers.IO) {
-                    if (local) Edits.saveLocal(ctx, s.id, title.trim(), artist.trim(), cover)
-                    else Edits.saveToCloud(ctx, Uri.parse(prefs.treeUri), folderId ?: error("Bibliothek zuerst aktualisieren"), s.id, title, artist, cover)
+                    if (local) Edits.saveLocal(ctx, s.id, title.trim(), artist.trim(), cover, trim)
+                    else Edits.saveToCloud(ctx, Uri.parse(prefs.treeUri), folderId ?: error("Bibliothek zuerst aktualisieren"), s.id, title, artist, cover, trim)
                 }
                 if (local) publish() else refresh()
             } catch (e: Exception) {
@@ -232,6 +233,12 @@ class MusicViewModel(app: Application) : AndroidViewModel(app) {
             MediaItem.Builder()
                 .setMediaId(s.id)
                 .setUri(s.uri)
+                .setClippingConfiguration(  // Schnitt: nur diesen Teil spielen, die Datei bleibt unverändert
+                    MediaItem.ClippingConfiguration.Builder()
+                        .setStartPositionMs(s.trimFromMs)
+                        .setEndPositionMs(if (s.trimToMs > s.trimFromMs) s.trimToMs else C.TIME_END_OF_SOURCE)
+                        .build(),
+                )
                 .setMediaMetadata(
                     MediaMetadata.Builder().setTitle(s.title).setArtist(s.artist).setArtworkUri(s.coverUri).build(),
                 )
