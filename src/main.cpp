@@ -6524,8 +6524,27 @@ static std::vector<CloudProv> ListClouds() {
         std::wstring docDir;
         if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Documents, 0, nullptr, &docs))) docDir = docs;
         CoTaskMemFree(docs);
-        for (const std::wstring& d : {home + L"\\MEGA", docDir + L"\\MEGA", home + L"\\MEGAsync", home + L"\\Documents\\MEGA"})
-            if (d.size() > 5 && DirExists(d)) { c.base = d; break; }
+        // ein echter MEGA-Sync-Ordner enthält die Datei .megaignore: in Benutzerordner, Dokumenten und den Laufwerkswurzeln suchen
+        std::vector<std::wstring> roots = {home, docDir};
+        for (wchar_t dl = L'C'; dl <= L'Z'; dl++) {
+            wchar_t rt[4] = {dl, L':', L'\\', 0};
+            if (GetDriveTypeW(rt) == DRIVE_FIXED) roots.push_back(std::wstring(rt));
+        }
+        for (auto& r : roots) {
+            if (r.empty() || !c.base.empty()) continue;
+            WIN32_FIND_DATAW fd;
+            HANDLE h = FindFirstFileW((r + (r.back() == L'\\' ? L"" : L"\\") + L"*").c_str(), &fd);
+            if (h == INVALID_HANDLE_VALUE) continue;
+            do {
+                if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || fd.cFileName[0] == L'.' || fd.cFileName[0] == L'$') continue;
+                std::wstring d = r + (r.back() == L'\\' ? L"" : L"\\") + fd.cFileName;
+                if (GetFileAttributesW((d + L"\\.megaignore").c_str()) != INVALID_FILE_ATTRIBUTES) { c.base = d; break; }
+            } while (FindNextFileW(h, &fd));
+            FindClose(h);
+        }
+        if (c.base.empty())  // Notlösung: der Standardordner, falls noch keine Markierungsdatei da ist
+            for (const std::wstring& d : {home + L"\\MEGA", docDir + L"\\MEGA", home + L"\\MEGAsync"})
+                if (d.size() > 5 && DirExists(d)) { c.base = d; break; }
         v.push_back(c);
     }
     {
