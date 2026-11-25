@@ -4,7 +4,14 @@ Eine Leiste am rechten Bildschirmrand für Windows: Maus an den Rand halten (ode
 
 ## Herunterladen
 
-Die neueste `HoverBar.exe` gibt es unter [Releases](https://github.com/KarosuMinoyari/HoverBar/releases/latest). In einen beliebigen Ordner legen und starten. Danach aktualisiert sich HoverBar auf Knopfdruck selbst: Zahnrad → Funktionen → *Nach Update suchen*. Es wird nie automatisch nach Updates gesucht.
+Unter [Releases](https://github.com/KarosuMinoyari/HoverBar/releases/latest) gibt es zwei Dateien:
+
+- **`setupHoverBar.exe`** (empfohlen): richtet alles ein. Kopiert HoverBar nach `%LOCALAPPDATA%\Programs\HoverBar`, legt eine Startmenü-Verknüpfung und einen Eintrag unter „Apps & Features“ an, richtet auf Wunsch den Autostart ein und startet HoverBar. Keine Administratorrechte nötig. Nochmal ausführen aktualisiert, `Deinstallieren.exe` im Programmordner (oder „Apps & Features“) entfernt alles wieder. Windows warnt eventuell („Unbekannter Herausgeber“), weil die Datei nicht signiert ist: *Weitere Informationen → Trotzdem ausführen*.
+- **`HoverBar.exe`**: nur das Programm, in einen beliebigen Ordner legen und starten.
+
+Danach aktualisiert sich HoverBar auf Knopfdruck selbst: Zahnrad → Funktionen → *Nach Update suchen*. Es wird nie automatisch nach Updates gesucht.
+
+Für den Installer ohne Oberfläche: `setupHoverBar.exe --still` (weitere Schalter: `--kein-autostart`, `--nicht-starten`, `--deinstallieren`).
 
 Voraussetzungen: Windows 10/11. Für die Claude-Seite braucht es die WebView2-Laufzeit (bei Windows 11 und mit Edge schon vorhanden).
 
@@ -66,15 +73,16 @@ Ergebnis: `build\HoverBar.exe`. Das WebView2-SDK liegt unter `third_party\WebVie
 ## Neue Version veröffentlichen
 
 1. `HB_VERSION` in `src\update.h` erhöhen.
-2. `tools\release.ps1` ausführen: baut, berechnet die SHA-256-Prüfsumme und erstellt das GitHub-Release `vX.Y.Z` mit `HoverBar.exe` und `HoverBar.exe.sha256`. Der Update-Knopf in HoverBar prüft diese Summe vor dem Einsetzen.
+2. `tools\release.ps1` ausführen: baut HoverBar und den Installer (`tools\build_setup.bat`), berechnet die SHA-256-Prüfsumme und erstellt das GitHub-Release `vX.Y.Z` mit `setupHoverBar.exe`, `HoverBar.exe` und `HoverBar.exe.sha256`. Der Update-Knopf in HoverBar prüft diese Summe vor dem Einsetzen.
 
 ## Aufbau
 
 ```
 src/           Quelltext (main.cpp = Oberfläche, music/media/games/plugins/chat/update)
 res/           Icon, Ressourcen, Skript zum Erzeugen des Icons
+setup/         Installer (setupHoverBar.exe)
 third_party/   WebView2-SDK
-tools/         Release-Skript
+tools/         Release-Skript, Installer-Build
 build.bat      Build
 ```
 

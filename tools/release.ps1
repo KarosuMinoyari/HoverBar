@@ -23,4 +23,7 @@ $hash = (Get-FileHash "$dist\HoverBar.exe" -Algorithm SHA256).Hash.ToLower()
 "$hash  HoverBar.exe" | Set-Content "$dist\HoverBar.exe.sha256" -Encoding ascii
 Write-Host "Version $ver, SHA-256 $hash"
 
-gh release create $tag "$dist\HoverBar.exe" "$dist\HoverBar.exe.sha256" --title "HoverBar $ver" --generate-notes
+cmd /c tools\build_setup.bat   # dist\setupHoverBar.exe (enthält genau diese HoverBar.exe)
+if ($LASTEXITCODE -ne 0) { throw 'Installer-Build fehlgeschlagen' }
+
+gh release create $tag "$dist\setupHoverBar.exe" "$dist\HoverBar.exe" "$dist\HoverBar.exe.sha256" --title "HoverBar $ver" --generate-notes

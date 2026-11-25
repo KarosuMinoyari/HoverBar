@@ -1,0 +1,3 @@
+// Installer: App-Symbol und die eingebettete HoverBar.exe (aus dist\, vom Release-Skript bereitgestellt)
+1 ICON "..\\res\\HoverBar.ico"
+2 RCDATA "..\\dist\\HoverBar.exe"
