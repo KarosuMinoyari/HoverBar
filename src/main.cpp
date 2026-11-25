@@ -1505,6 +1505,8 @@ static void LayoutDesign(int W, int pad, int y0) {
 // Vorgeschlagen: optionale Erweiterungen, die man bei Bedarf installiert
 static void LayoutSuggested(int W, int pad, int y0) {
     int cw = W - 2 * pad, y = y0;
+    static bool askedIcon = false;
+    if (!askedIcon) { askedIcon = true; StartFavicon(L"claude.ai"); }  // öffentliches Claude-Symbol für die Karte (einmalig, nur beim Öffnen dieses Reiters)
     bool have = !WizTree_Exe().empty();
     int ch = S(196);
     g.hits.push_back({{pad, y, pad + cw, y + ch}, HT::PlugCard, 0});
@@ -2579,6 +2581,12 @@ static void FreeCovers() {
 }
 
 // Cover zeichnen (nach dem Zusammensetzen) oder Platzhalter mit Notensymbol
+// Claude-Symbol (von claude.ai geholt wie die Website-Symbole der Favoriten-Links); nullptr, solange es fehlt
+static HBITMAP ClaudeIcon(int px) {
+    std::wstring f = FaviconFile(L"claude.ai");
+    return GetFileAttributesW(f.c_str()) != INVALID_FILE_ATTRIBUTES ? CoverBmp(f, px) : nullptr;
+}
+
 static void DrawCover(HDC dc, const std::wstring& path, int x, int y, int px) {
     HBITMAP b = CoverBmp(path, px);
     if (b) {
@@ -2958,8 +2966,12 @@ static void DrawHit(HDC dc, const Hit& h, bool hot, int cardHot) {
         if (h.idx == 1) {  // Claude-Chat
             FillRound(dc, h.rc, S(18), cCard);
             RECT ic = {h.rc.left + S(18), h.rc.top + S(18), h.rc.left + S(18) + S(44), h.rc.top + S(18) + S(44)};
-            FillRound(dc, ic, S(12), RGB(217, 119, 87));
-            Text(dc, L"", ic, g.fGlyphL, RGB(255, 255, 255), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            if (HBITMAP cb = ClaudeIcon(ic.right - ic.left)) {
+                g.iconQueue.push_back({-3, ic.left, ic.top, ic.right - ic.left, CurrentClip(dc), g.drawFade, cb});
+            } else {
+                FillRound(dc, ic, S(12), RGB(217, 119, 87));
+                Text(dc, L"", ic, g.fGlyphL, RGB(255, 255, 255), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            }
             int tx = ic.right + S(14);
             Text(dc, L"Claude – KI-Chat", {tx, h.rc.top + S(16), h.rc.right - S(18), h.rc.top + S(40)}, g.fHead, cText, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
             Text(dc, L"claude.ai direkt in der Leiste, schneller Chat ohne Browser.", {tx, h.rc.top + S(40), h.rc.right - S(18), h.rc.top + S(60)},
@@ -3874,6 +3886,13 @@ static void DrawScene(HDC dc, int W, int H) {
             if (sel) FillRound(dc, h.rc, S(12), cAccent);
             else if (i == g.hot) FillRound(dc, h.rc, S(12), cHover);
             static const wchar_t* gl[5] = {L"\uE80F", L"\uEC4F", L"\uE787", L"\uEDA2", L"\uE8BD"};
+            if (h.idx == 4) {  // Claude: das echte Claude-Symbol (von claude.ai), bis es geladen ist ein Sprechblasen-Symbol
+                int px = S(28);
+                if (HBITMAP cb = ClaudeIcon(px)) {
+                    g.iconQueue.push_back({-3, (h.rc.left + h.rc.right - px) / 2, (h.rc.top + h.rc.bottom - px) / 2, px, CurrentClip(dc), 1.f, cb});
+                    continue;
+                }
+            }
             Text(dc, gl[h.idx], h.rc, g.fGlyphL, sel ? RGB(255, 255, 255) : cText, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             continue;
         }
@@ -6933,6 +6952,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         Games_Init(hwnd, g.ini);
         LoadLinks();  // Favoriten-Links, fehlende Website-Symbole im Hintergrund holen
         for (auto& l : g.links) StartFavicon(l.host);
+        if (g.claudeOn) StartFavicon(L"claude.ai");  // Claude-Symbol für die Seitenleiste
         SetTimer(hwnd, T_GAMES, 60000, nullptr);  // Spielzeit messen: einmal pro Minute
         return 0;
 
