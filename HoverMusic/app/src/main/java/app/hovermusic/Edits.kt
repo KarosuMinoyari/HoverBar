@@ -136,6 +136,26 @@ object Edits {
         }
     }
 
+    /**
+     * Wurde ein Handy-Download bearbeitet, bevor der PC ihn eingelesen hatte, steht die Änderung nur auf dem Handy.
+     * Sobald der Song in der Bibliothek vom PC auftaucht, wird sie nachgereicht. Liefert die Anzahl.
+     */
+    fun forwardDownloadEdits(ctx: Context, tree: Uri, folderId: String, local: List<Song>, cloud: Library): Int {
+        var count = 0
+        for (s in local) {
+            val info = File(Downloader.dir(ctx), s.id.removePrefix("yt:") + ".info.json")
+            val o = runCatching { JSONObject(info.readText()) }.getOrNull() ?: continue
+            if (!o.optBoolean("hm_edited")) continue
+            val onPc = cloud.songs.firstOrNull { Upload.marker(s.id) in it.file } ?: continue
+            saveToCloud(ctx, tree, folderId, onPc.id, s.title, s.artist, if (o.optBoolean("hm_cover")) s.coverUri else null, s.cuts.ifEmpty { null })
+            o.remove("hm_edited")
+            o.remove("hm_cover")
+            info.writeText(o.toString())
+            count++
+        }
+        return count
+    }
+
     /** Änderung eines auf dem Handy geladenen Songs. */
     fun saveLocal(ctx: Context, id: String, title: String, artist: String, newCover: Uri?, cuts: String?) {
         val dir = Downloader.dir(ctx)
@@ -143,6 +163,8 @@ object Edits {
         val info = File(dir, "$key.info.json")
         val o = JSONObject(info.readText())
         o.put("track", title).put("artist", artist)
+        o.put("hm_edited", true)  // noch an den PC weiterzugeben, sobald er den Song eingelesen hat
+        if (newCover != null) o.put("hm_cover", true)
         if (cuts != null) o.put("hm_cuts", cuts)
         info.writeText(o.toString())
         if (newCover != null) {

@@ -129,6 +129,7 @@ class MusicViewModel(app: Application) : AndroidViewModel(app) {
             withContext(Dispatchers.IO) {
                 uploadLock.withLock {
                     for (s in Upload.pending(ctx, Downloader.localSongs(ctx), loaded.library)) Upload.upload(ctx, tree, loaded.folderId, s)
+                    Edits.forwardDownloadEdits(ctx, tree, loaded.folderId, Downloader.localSongs(ctx), loaded.library)
                 }
             }
         } catch (e: Exception) {
