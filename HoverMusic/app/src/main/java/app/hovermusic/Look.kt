@@ -1,6 +1,12 @@
 package app.hovermusic
 
+import android.content.ComponentName
 import android.content.Context
+import android.content.pm.PackageManager
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import android.content.Intent
 import android.net.Uri
 import androidx.activity.compose.BackHandler
@@ -101,6 +107,28 @@ data class Look(
     }
 }
 
+/** Farbe des Symbols auf dem Startbildschirm: je Farbe ein Alias (Icon0 … Icon5), genau eines ist eingeschaltet. */
+object AppIcon {
+    val colors = listOf(Color(0xFF6FB4FF), Color(0xFF8E6CFF), Color(0xFFE0558F), Color(0xFFE0654C), Color(0xFF2FA77A), Color(0xFF7A808C))
+
+    private fun name(ctx: Context, i: Int) = ComponentName(ctx, "app.hovermusic.Icon$i")
+
+    fun current(ctx: Context): Int = colors.indices.firstOrNull {
+        ctx.packageManager.getComponentEnabledSetting(name(ctx, it)) == PackageManager.COMPONENT_ENABLED_STATE_ENABLED
+    } ?: 0
+
+    fun set(ctx: Context, chosen: Int) {
+        val pm = ctx.packageManager
+        fun state(i: Int, on: Boolean) = pm.setComponentEnabledSetting(
+            name(ctx, i),
+            if (on) PackageManager.COMPONENT_ENABLED_STATE_ENABLED else PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+            PackageManager.DONT_KILL_APP,
+        )
+        state(chosen, true)  // erst das neue einschalten, damit die App nie ohne Symbol ist
+        colors.indices.filter { it != chosen }.forEach { state(it, false) }
+    }
+}
+
 @Composable
 fun SettingsScreen(vm: MusicViewModel, onClose: () -> Unit, onPickFolder: () -> Unit) {
     val ctx = LocalContext.current
@@ -140,6 +168,19 @@ fun SettingsScreen(vm: MusicViewModel, onClose: () -> Unit, onPickFolder: () -> 
             Slider(look.imageStrength, { vm.setLook(look.copy(imageStrength = it)) }, valueRange = 0.05f..0.8f)
             Toggle("Glas-Effekt (Bild weichzeichnen, ab Android 12)", look.blur) { vm.setLook(look.copy(blur = it)) }
         }
+
+        Text("Farbe des App-Symbols")
+        var icon by remember { mutableIntStateOf(AppIcon.current(ctx)) }
+        Row(Modifier.fillMaxWidth().padding(vertical = 10.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+            AppIcon.colors.forEachIndexed { i, c ->
+                Box(
+                    Modifier.size(44.dp).clip(RoundedCornerShape(12.dp)).background(c)
+                        .border(if (icon == i) 3.dp else 0.dp, if (icon == i) Color.White else c, RoundedCornerShape(12.dp))
+                        .clickable { AppIcon.set(ctx, i); icon = i },
+                )
+            }
+        }
+        Text("Der Startbildschirm braucht dafür ein paar Sekunden; eine abgelegte Verknüpfung muss eventuell neu angelegt werden.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
 
         Head("Schrift & Bewegung")
         Chips(listOf("Standard", "Serif", "Mono", "Schreibschrift"), look.font) { vm.setLook(look.copy(font = it)) }

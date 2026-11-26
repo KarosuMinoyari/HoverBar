@@ -14,8 +14,8 @@ android {
         applicationId = "app.hovermusic"
         minSdk = 26
         targetSdk = 34
-        versionCode = 12
-        versionName = "2.0.0"
+        versionCode = 13
+        versionName = "2.0.1"
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }  // yt-dlp bringt Python mit
     }
 

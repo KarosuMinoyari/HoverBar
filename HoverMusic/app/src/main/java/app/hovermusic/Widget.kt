@@ -87,7 +87,7 @@ object Widgets {
             val s = load(app)
             val cover = cover(app, s.cover)
             val manager = AppWidgetManager.getInstance(app)
-            for (id in ids(app)) manager.updateAppWidget(id, views(app, WidgetStyle.load(app, id), s, cover))
+            for (id in ids(app)) manager.updateAppWidget(id, views(app, WidgetStyle.load(app, id), s, cover, layoutFor(manager, id)))
         }
     }
 
@@ -96,7 +96,7 @@ object Widgets {
         val manager = AppWidgetManager.getInstance(ctx)
         for (id in ids(ctx)) {
             if (!WidgetStyle.load(ctx, id).progress) continue
-            val v = RemoteViews(ctx.packageName, R.layout.widget)
+            val v = RemoteViews(ctx.packageName, layoutFor(manager, id))
             v.setProgressBar(R.id.w_progress, 1000, permille, false)
             manager.partiallyUpdateAppWidget(id, v)
         }
@@ -122,8 +122,25 @@ object Widgets {
         return bmp
     }
 
-    private fun views(ctx: Context, style: WidgetStyle, s: NowState, cover: Bitmap?): RemoteViews {
-        val v = RemoteViews(ctx.packageName, R.layout.widget)
+    /** Hoch genug, dass Titel und Knöpfe als Gruppe zusammenbleiben können? */
+    private fun layoutFor(manager: AppWidgetManager, id: Int) =
+        if (manager.getAppWidgetOptions(id).getInt(AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT) >= 120) R.layout.widget_tall else R.layout.widget
+
+    /** Schwebend: Symbol in einem ausgefüllten Kreis. */
+    private fun circle(ctx: Context, icon: Int, fill: Int): Bitmap {
+        val size = 144
+        val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bmp)
+        canvas.drawCircle(size / 2f, size / 2f, size / 2f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = fill })
+        val d = ContextCompat.getDrawable(ctx, icon)!!.mutate()
+        d.setTint(WidgetStyle.contentColor(fill))
+        d.setBounds(size / 5, size / 5, size - size / 5, size - size / 5)
+        d.draw(canvas)
+        return bmp
+    }
+
+    private fun views(ctx: Context, style: WidgetStyle, s: NowState, cover: Bitmap?, layout: Int): RemoteViews {
+        val v = RemoteViews(ctx.packageName, layout)
         val chosen = WidgetStyle.colors[style.color.coerceIn(0, WidgetStyle.colors.lastIndex)]
         val text = if (style.filled) WidgetStyle.contentColor(chosen) else 0xFFFFFFFF.toInt()
         val symbols = if (style.filled) text else chosen
@@ -140,10 +157,20 @@ object Widgets {
         v.setTextViewTextSize(R.id.w_artist, TypedValue.COMPLEX_UNIT_SP, sp - 2)
 
         val pad = (listOf(11, 7, 2)[style.size.coerceIn(0, 2)] * ctx.resources.displayMetrics.density).toInt()
-        v.setImageViewResource(R.id.w_play, if (s.playing) R.drawable.ic_w_pause else R.drawable.ic_w_play)
         val open = PendingIntent.getActivity(ctx, 0, Intent(ctx, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
         for ((view, command) in listOf(R.id.w_prev to "prev", R.id.w_play to "toggle", R.id.w_next to "next")) {
-            v.setInt(view, "setColorFilter", symbols)
+            val icon = when (command) {
+                "prev" -> R.drawable.ic_w_prev
+                "next" -> R.drawable.ic_w_next
+                else -> if (s.playing) R.drawable.ic_w_pause else R.drawable.ic_w_play
+            }
+            if (style.filled) {
+                v.setImageViewResource(view, icon)
+                v.setInt(view, "setColorFilter", symbols)
+            } else {
+                v.setImageViewBitmap(view, circle(ctx, icon, chosen))
+                v.setInt(view, "setColorFilter", 0)
+            }
             v.setViewPadding(view, pad, pad, pad, pad)
             // ohne laufende Wiedergabe gibt es nichts zu steuern: dann öffnet der Knopf die App
             v.setOnClickPendingIntent(
@@ -164,6 +191,10 @@ object Widgets {
 
 class WidgetProvider : AppWidgetProvider() {
     override fun onUpdate(context: Context, appWidgetManager: AppWidgetManager, appWidgetIds: IntArray) = Widgets.redraw(context)
+
+    // Größe geändert: passendes Layout wählen
+    override fun onAppWidgetOptionsChanged(context: Context, appWidgetManager: AppWidgetManager, appWidgetId: Int, newOptions: android.os.Bundle) =
+        Widgets.redraw(context)
 
     override fun onReceive(context: Context, intent: Intent) {
         val command = intent.action?.removePrefix("app.hovermusic.widget.")

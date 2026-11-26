@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Normale Note vor einem kleinen, gefüllten Dreieck (das "<" aus HoverBar); der Notenhals steht mittig (x = 54) -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#FF7A808C"
+        android:strokeColor="#FF7A808C"
+        android:strokeWidth="4"
+        android:strokeLineJoin="round"
+        android:pathData="M36,54 L68,35 L68,73 Z" />
+    <!-- Rand in Hintergrundfarbe, damit sich die weiße Note vom Dreieck abhebt; überall 2.5 breit
+         (Hals: Linie 5 + 2 x 2.5 = 10, gefüllter Kopf: nur die halbe Linienbreite steht über, also 5) -->
+    <path
+        android:strokeColor="@color/hm_icon_background"
+        android:strokeWidth="10"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M54,67 L54,33 C56,41 66,42 65,53" />
+    <path
+        android:strokeColor="@color/hm_icon_background"
+        android:strokeWidth="5"
+        android:pathData="M36.5,68 C36.5,63.6 40.9,60.5 46.5,60.5 C52.1,60.5 56.5,63.1 56.5,67 C56.5,71.4 52.1,75 46.5,75 C40.9,75 36.5,72.4 36.5,68 Z" />
+    <!-- Notenkopf -->
+    <path
+        android:fillColor="#FFF5F5F8"
+        android:pathData="M36.5,68 C36.5,63.6 40.9,60.5 46.5,60.5 C52.1,60.5 56.5,63.1 56.5,67 C56.5,71.4 52.1,75 46.5,75 C40.9,75 36.5,72.4 36.5,68 Z" />
+    <!-- Hals und Fähnchen -->
+    <path
+        android:strokeColor="#FFF5F5F8"
+        android:strokeWidth="5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M54,67 L54,33 C56,41 66,42 65,53" />
+</vector>
