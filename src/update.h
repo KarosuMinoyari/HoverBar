@@ -4,7 +4,7 @@
 #include <windows.h>
 #include <string>
 
-#define HB_VERSION L"1.2.0"
+#define HB_VERSION L"1.3.0"
 #define HB_REPO "KarosuMinoyari/HoverBar"  // GitHub: Besitzer/Repository
 
 enum { WM_APP_UPDATE = WM_APP + 90 };

@@ -12,6 +12,11 @@ class DownloaderTest {
         assertNull(Downloader.youtubeUrl("--exec rm"))
     }
 
+    @Test fun suchtreffer() {
+        val r = Downloader.parseSearch("WARNING: x\naaaaaaaaaaa|340.0|Kanal|Lied | Live\n")
+        assertEquals(listOf(Found("aaaaaaaaaaa", "Lied | Live", "Kanal", 340)), r)
+    }
+
     @Test fun infoJson() {
         val i = Downloader.parseInfo("""{"id":"abc","title":"Video","uploader":"Band - Topic","duration":125.4}""")
         assertEquals(SongInfo("abc", "Video", "Band", 125), i)

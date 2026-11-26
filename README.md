@@ -26,6 +26,7 @@ Die Symbole sind unten angeheftet. Mit dem Mausrad über der Leiste blätterst d
 | Kalender | Monatsansicht mit Terminen. |
 | Claude | Optionale Erweiterung (Zahnrad → Erweiterungen → *Hinzufügen*). claude.ai eingebettet (WebView2), Anmeldung bleibt gespeichert, der Speicher wird beim Schließen freigegeben. *Entfernen* löscht auch die gespeicherte Anmeldung. |
 | Timer | Optionale Erweiterung (Zahnrad → Erweiterungen). Stunden, Minuten, Sekunden über Ziffernräder (ziehen oder Mausrad), eigener Klingelton (MP3/WAV/M4A). Läuft bei geschlossener Leiste weiter, weckt den PC aber nicht aus dem Ruhezustand. |
+| Vorschläge | Optionale Erweiterung. Songs ähnlicher Künstler zu deinen meistgehörten (Deezer, ohne Konto; übertragen werden nur Künstlernamen). Klick = 30-s-Hörprobe, Pfeil = laden. |
 | Speicher | Nur mit der optionalen Erweiterung WizTree (Zahnrad → Erweiterungen). Laufwerke und größte Apps. |
 
 Unter Funktionen → *HoverBar* lassen sich **Home (Apps)** und **Kalender** einzeln ausschalten. Ohne Home startet HoverBar in der Musik-Bibliothek (Speicher ist dann auch ausgeblendet); sind beide aus, ist es nur noch Musik-Player. Erweiterungen entfernst du im Reiter *Erweiterungen*.
@@ -40,8 +41,9 @@ Unter Funktionen → *HoverBar* lassen sich **Home (Apps)** und **Kalender** ein
 
 ## Musik
 
-Eigener Player für die Songs im Musikordner (Standard `Musik\HoverBar`, änderbar unter Funktionen). Songs kommen aus YouTube-Links: Link ins Feld der Bibliothek einfügen und Enter, oder Alt+Ende (Taste unter Funktionen → *Link laden* änderbar; markierter Link oder die Adresse der offenen YouTube-Seite). Dafür lädt HoverBar auf Wunsch `yt-dlp` herunter (Funktionen → *yt-dlp*, mit Prüfsumme).
+Eigener Player für die Songs im Musikordner (Standard `Musik\HoverBar`, änderbar unter Funktionen). Songs findest du über das Feld oben in der Bibliothek (Titel eintippen, Enter: YouTube-Treffer, Klick lädt) oder aus YouTube-Links: Link ins Feld der Bibliothek einfügen und Enter, oder Alt+Ende (Taste unter Funktionen → *Link laden* änderbar; markierter Link oder die Adresse der offenen YouTube-Seite). Dafür lädt HoverBar auf Wunsch `yt-dlp` herunter (Funktionen → *yt-dlp*, mit Prüfsumme).
 
+- **Spotify-Playlist übernehmen:** Playlist als CSV exportieren (z. B. mit Exportify), dann Funktionen → *Spotify-Playlist*. HoverBar sucht jeden Titel auf YouTube und lädt ihn in eine gleichnamige Playlist. Genommen wird nur ein Video, dessen Länge höchstens 5 s abweicht (unter den ersten 10 Treffern); sonst wird der Titel nicht geladen. Gleiches gilt für Vorschläge. Die Tonspur kommt nicht von Spotify. Nur für die private Nutzung; Nutzungsbedingungen und Urheberrecht beachten.
 - **Musikleiste unten:** Cover (Klick öffnet „Läuft gerade“), Titel, Fortschritt, Steuerung, Lautstärke (klappt beim Darüberfahren aus), Herz für Favoriten, Zufall/Wiederholen (jeder Klick wechselt den Modus: aus, Zufall, Playlist wiederholen, Song wiederholen).
 - **Läuft gerade:** Großes Cover, Steuerung, Songtext (aus einer `.lrc`-Datei neben dem Song oder von lrclib.net, dabei werden Titel und Künstler übertragen). Mit dem Mausrad im Text suchen, Klick springt dorthin; nach 2 s geht es zurück zur aktuellen Zeile. Nach unten scrollen klappt die Ansicht in die Bibliothek ein. Rechtsklick aufs Cover: Song bearbeiten.
 - **Song schneiden:** Rechtsklick → *Bearbeiten / Schneiden*. Linien für Anfang und Ende (auf die Millisekunde), Wellenform, Rückgängig, „Auswahl entfernen“. Verlustfrei.
@@ -81,6 +83,7 @@ Eigene App im Ordner `HoverMusic/` (Kotlin, Jetpack Compose, Media3), mit eigene
 
 - **Einrichten:** In HoverBar am PC *Musik-Sync* einrichten, am Ende erscheint der QR-Code. In HoverMusic „QR-Code scannen“ (nutzt den Code-Scanner der Google Play-Dienste, ohne Kamera-Berechtigung; alternativ „Link aus der Zwischenablage“): Die App führt durch die Installation der Cloud-App auf dem Handy und die Wahl des Ordners `HoverBar-Musik` (Android-Ordnerauswahl: Google Drive, OneDrive, MEGA, Koofr … erscheinen dort). Es werden keine Zugangsdaten und keine Cloud-Schnittstellen gebraucht, die App liest nur diesen Ordner.
 - **Funktionen:** Alle Songs, Favoriten, Playlists, Zuletzt gespielt; „Läuft gerade“ mit großem Cover, Fortschritt, Zurück/Play/Weiter, Zufall/Wiederholen (jeder Klick wechselt: aus → Zufall → Playlist wiederholen → Song wiederholen), Herz; Songtext mit Mitscrollen (Tippen auf eine Zeile springt dorthin, nach 2 s geht es zur aktuellen Zeile zurück); Wiedergabe im Hintergrund mit Steuerung in der Benachrichtigung und auf dem Sperrbildschirm.
+- **Suchen:** Feld oben in der Bibliothek, Treffer antippen lädt den Song.
 - **Von YouTube laden:** In YouTube auf *Teilen* → HoverMusic. yt-dlp wird beim ersten Start in der neuesten Version geholt (Aktualisieren über das Download-Symbol). Beim nächsten Öffnen der App wandert eine Kopie in den Cloud-Ordner; am PC liest sie der Knopf ⟳ neben „Meistgespielt“ ein (ein Balken darunter läuft, solange noch Dateien ankommen) (braucht Schreibrecht: bei älterer Einrichtung den Ordner neu wählen).
 - **Meistgespielt:** „Alle Songs“ lässt sich nach Wiedergaben sortieren (Zahl vom PC plus die auf dem Handy).
 - **Löschen:** im Bearbeiten-Fenster; PC-Songs löscht HoverBar beim nächsten Öffnen auch am PC.

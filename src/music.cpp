@@ -1,6 +1,7 @@
 // Musik-Bibliothek, YouTube -> MP3, Cover-Suche, Wiedergabe. Siehe music.h.
 #define NOMINMAX
 #include "music.h"
+#include "parse.h"
 #include <unknwn.h>
 #include <shlobj.h>
 #include <propsys.h>
@@ -899,6 +900,8 @@ static void GuessArtistTitle(const std::wstring& videoTitle, const std::wstring&
     if (title.empty()) title = videoTitle;
 }
 
+static std::string RunCapture(const std::wstring& cmd);
+
 static DWORD WINAPI JobThread(LPVOID) {
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     MFStartup(MF_VERSION, MFSTARTUP_LITE);
@@ -906,15 +909,26 @@ static DWORD WINAPI JobThread(LPVOID) {
         // nächsten wartenden Auftrag holen
         size_t idx = (size_t)-1;
         std::wstring url;
+        DownloadJob job;
         EnterCriticalSection(&g_jobCs);
         for (size_t i = 0; i < g_jobs.size(); i++)
-            if (g_jobs[i].stage == 0) { idx = i; url = g_jobs[i].url; break; }
+            if (g_jobs[i].stage == 0) { idx = i; url = g_jobs[i].url; job = g_jobs[i]; break; }
         LeaveCriticalSection(&g_jobCs);
         if (idx == (size_t)-1) {
             if (WaitForSingleObject(g_jobWake, 60000) == WAIT_TIMEOUT) break;  // eine Minute nichts zu tun: Thread beenden
             continue;
         }
         UpdateJob(idx, 1, 0);
+        if (job.seconds > 0 && url.rfind(L"ytsearch", 0) == 0) {  // nur ein Video nehmen, das höchstens 5 s abweicht
+            SetEnvironmentVariableW(L"PYTHONUTF8", L"1");
+            std::string found = PickByDuration(RunCapture(L"\"" + ToolPath() + L"\" --no-warnings --flat-playlist --print \"%(id)s %(duration)s\" \"ytsearch10:" +
+                                                          url.substr(url.find(L':') + 1) + L"\""), job.seconds);
+            if (found.empty()) {
+                UpdateJob(idx, -1, -1, L"", L"Kein Video mit passender Länge (±5 s)");
+                continue;
+            }
+            url = L"https://youtu.be/" + FromUtf8(found);
+        }
         // manche m4a-Dateien von YouTube kann Windows nicht lesen (0 Samples) -> zweiter Versuch mit WebM/Opus
         int attempt = 0;
     retry:
@@ -1010,6 +1024,12 @@ static DWORD WINAPI JobThread(LPVOID) {
         s.url = url;
         s.duration = duration;
         GuessArtistTitle(vtitle, uploader, ytArtist, ytTrack, s.artist, s.title);
+        if (!job.name.empty()) {  // gesucht: Angaben aus der Liste statt aus dem Videotitel
+            s.artist = job.artist;
+            s.title = job.name;
+            s.playlist = job.playlist;
+            if (!id.empty()) s.url = L"https://youtu.be/" + id;
+        }
         CreateDirectoryW(Music_Folder().c_str(), nullptr);
         std::wstring base = Music_Folder() + L"\\" + SafeFileName(s.artist.empty() ? s.title : s.artist + L" - " + s.title);
         s.file = base + L".mp3";
@@ -1062,11 +1082,28 @@ static DWORD WINAPI JobThread(LPVOID) {
 
 bool Music_ToolAvailable() { return GetFileAttributesW(ToolPath().c_str()) != INVALID_FILE_ATTRIBUTES; }
 
+static void QueueJob(const DownloadJob& j);
 void Music_AddUrl(const std::wstring& url) {
-    InitJobs();
     DownloadJob j;
     j.url = Trim(url);
     j.title = j.url;
+    QueueJob(j);
+}
+void Music_AddSearch(const std::wstring& artist, const std::wstring& name, int seconds, const std::wstring& playlist) {
+    DownloadJob j;
+    j.artist = artist;
+    j.name = name;
+    j.seconds = seconds;
+    j.playlist = playlist;
+    j.title = artist.empty() ? name : artist + L" – " + name;
+    std::wstring q = artist.substr(0, artist.find_first_of(L",;")) + L" " + name;
+    for (auto& c : q)  // kommt aus einer Datei bzw. dem Netz: nichts, was die Befehlszeile aufbrechen könnte
+        if (c == L'"' || c == L'\\' || c < 32) c = L' ';
+    j.url = L"ytsearch1:" + q;
+    QueueJob(j);
+}
+static void QueueJob(const DownloadJob& j) {
+    InitJobs();
     EnterCriticalSection(&g_jobCs);
     g_jobs.push_back(j);
     LeaveCriticalSection(&g_jobCs);
@@ -1099,6 +1136,54 @@ void Music_ClearFinishedJobs() {
         g_jobs.erase(g_jobs.begin());
     }
     LeaveCriticalSection(&g_jobCs);
+}
+
+// ---------------------------------------------------------------- Spotify-Import
+int Music_ImportCsv(const std::wstring& file, int& downloads) {
+    downloads = 0;
+    std::vector<BYTE> raw;
+    if (!ReadAll(file, raw) || raw.empty() || raw.size() > 8 * 1024 * 1024) return -1;
+    auto rows = ParseCsv(std::string(raw.begin(), raw.end()));
+    if (rows.size() < 2) return -1;
+    auto column = [&](std::initializer_list<const char*> names) {
+        for (const char* n : names)
+            for (size_t i = 0; i < rows[0].size(); i++)
+                if (!_stricmp(rows[0][i].c_str(), n)) return (int)i;
+        return -1;
+    };
+    int cName = column({"Track Name", "Title", "Song", "Name"}), cArtist = column({"Artist Name(s)", "Artist Name", "Artist"}),
+        cMs = column({"Duration (ms)", "Track Duration (ms)"});
+    if (cName < 0 || cArtist < 0) return -1;
+    std::wstring list = file.substr(file.find_last_of(L'\\') + 1);
+    list = list.substr(0, list.find_last_of(L'.'));
+    for (auto& c : list) if (c == L'_' || c < 32) c = L' ';
+    int total = 0;
+    bool changed = false;
+    for (size_t r = 1; r < rows.size() && total < 1000; r++) {
+        auto cell = [&](int c) { return c >= 0 && c < (int)rows[r].size() ? FromUtf8(rows[r][c]) : std::wstring(); };
+        std::wstring name = Clean(cell(cName)), artist = Clean(cell(cArtist));
+        for (auto& c : artist) if (c == L';') c = L',';
+        if (name.empty()) continue;
+        total++;
+        std::wstring first = artist.substr(0, artist.find(L','));
+        auto have = std::find_if(g_songs.begin(), g_songs.end(), [&](const Song& s) {
+            return !_wcsicmp(s.title.c_str(), name.c_str()) && StrStrIW(s.artist.c_str(), first.c_str());
+        });
+        if (have != g_songs.end()) {
+            Music_AddToPlaylist(list, have->id);
+            changed = true;
+        } else {
+            Music_AddSearch(artist, name, _wtoi(cell(cMs).c_str()) / 1000, list);
+            downloads++;
+        }
+    }
+    if (changed) Music_Save();
+    return total;
+}
+void Music_AddToPlaylist(const std::wstring& name, const std::wstring& id) {
+    auto p = std::find_if(g_playlists.begin(), g_playlists.end(), [&](const Playlist& x) { return x.name == name; });
+    if (p == g_playlists.end()) p = g_playlists.insert(g_playlists.end(), Playlist{name, {}});
+    if (std::find(p->ids.begin(), p->ids.end(), id) == p->ids.end()) p->ids.push_back(id);
 }
 
 // ---------------------------------------------------------------- Wiedergabe (Windows MediaPlayer)
@@ -2073,4 +2158,108 @@ void Music_SyncSetup(HWND notify, const std::wstring& dir) {
     HANDLE t = CreateThread(nullptr, 0, SyncThread, p, 0, nullptr);
     if (t) CloseHandle(t);
     else { delete p; SetSyncStatus(3, 0, 0, L"Konnte nicht starten."); }
+}
+
+// ---------------------------------------------------------------- Vorschläge (Deezer, ohne Konto; übertragen werden nur Künstlernamen)
+struct SuggestParams {
+    std::vector<std::wstring> artists, owned;  // meistgehörte Künstler; vorhandene Titel (klein geschrieben)
+};
+static std::wstring LowerText(std::wstring s) {
+    for (auto& c : s) c = (wchar_t)towlower(c);
+    return s;
+}
+static DWORD WINAPI SuggestThread(LPVOID pp) {
+    auto* p = (SuggestParams*)pp;
+    auto* out = new std::vector<Suggestion>();
+    std::vector<std::wstring> seen = p->owned;
+    auto id = [](const std::string& obj) { return std::to_wstring((long long)JsonNumber(obj, "id")); };
+    auto tracks = [&](const std::wstring& artistId, int take) {
+        for (auto& t : JsonObjects(HttpGet(L"https://api.deezer.com/artist/" + artistId + L"/top?limit=8"))) {
+            size_t a = t.find("\"artist\":{");
+            Suggestion s;
+            s.title = JsonField(t, "title");
+            s.artist = a == std::string::npos ? L"" : JsonField(t.substr(a), "name");
+            s.preview = JsonField(t, "preview");
+            s.seconds = (int)JsonNumber(t, "duration");
+            std::wstring key = LowerText(s.title);
+            if (s.title.empty() || s.preview.rfind(L"https://", 0) != 0 || std::find(seen.begin(), seen.end(), key) != seen.end()) continue;
+            seen.push_back(key);
+            out->push_back(s);
+            if (!--take) break;
+        }
+    };
+    for (auto& artist : p->artists) {
+        auto found = JsonObjects(HttpGet(L"https://api.deezer.com/search/artist?limit=1&q=" + UrlEncode(artist)));
+        if (found.empty()) continue;
+        for (auto& r : JsonObjects(HttpGet(L"https://api.deezer.com/artist/" + id(found[0]) + L"/related?limit=3"))) tracks(id(r), 2);
+        tracks(id(found[0]), 1);  // und ein Song des Künstlers selbst, den du noch nicht hast
+    }
+    if (!PostMessageW(g_notify, WM_APP_MUSIC, MUSIC_SUGGEST, (LPARAM)out)) delete out;
+    delete p;
+    return 0;
+}
+void Music_Suggest() {
+    auto* p = new SuggestParams();
+    std::vector<std::pair<int, std::wstring>> top;  // Gewicht, Künstler
+    for (auto& s : g_songs) {
+        p->owned.push_back(LowerText(s.title));
+        std::wstring a = s.artist.substr(0, s.artist.find_first_of(L",&;"));
+        while (!a.empty() && a.back() == L' ') a.pop_back();
+        if (a.empty()) continue;
+        auto it = std::find_if(top.begin(), top.end(), [&](const std::pair<int, std::wstring>& x) { return !_wcsicmp(x.second.c_str(), a.c_str()); });
+        if (it == top.end()) top.push_back({1 + s.plays, a});
+        else it->first += 1 + s.plays;
+    }
+    std::stable_sort(top.begin(), top.end(), [](const std::pair<int, std::wstring>& x, const std::pair<int, std::wstring>& y) { return x.first > y.first; });
+    for (size_t i = 0; i < top.size() && i < 6; i++) p->artists.push_back(top[i].second);
+    HANDLE t = CreateThread(nullptr, 0, SuggestThread, p, 0, nullptr);
+    if (t) CloseHandle(t);
+    else delete p;
+}
+static wmp::MediaPlayer g_preview{nullptr};
+void Music_PlayPreview(const std::wstring& url) {
+    try {
+        if (g_preview) g_preview.Pause();
+        if (url.empty()) {
+            g_preview = nullptr;
+            return;
+        }
+        if (!g_preview) g_preview = wmp::MediaPlayer();
+        g_preview.Volume(g_volume);
+        g_preview.Source(wmc::MediaSource::CreateFromUri(winrt::Windows::Foundation::Uri(url)));
+        g_preview.Play();
+    } catch (...) {
+    }
+}
+
+// ---------------------------------------------------------------- Songsuche (YouTube über yt-dlp)
+static DWORD WINAPI SearchThread(LPVOID p) {
+    auto* q = (std::wstring*)p;
+    SetEnvironmentVariableW(L"PYTHONUTF8", L"1");
+    std::string raw = RunCapture(L"\"" + ToolPath() + L"\" --no-warnings --flat-playlist --print \"%(id)s|%(duration)s|%(channel)s|%(title)s\" \"ytsearch12:" + *q + L"\"");
+    auto* out = new std::vector<Suggestion>();
+    for (auto& h : ParseSearch(raw)) {
+        Suggestion s;
+        s.title = FromUtf8(h.title);
+        s.artist = FromUtf8(h.channel);
+        if (h.seconds > 0) {
+            wchar_t t[16];
+            swprintf(t, 16, L" · %d:%02d", h.seconds / 60, h.seconds % 60);
+            s.artist += t;
+        }
+        s.seconds = h.seconds;
+        s.url = L"https://youtu.be/" + FromUtf8(h.id);
+        out->push_back(s);
+    }
+    if (!PostMessageW(g_notify, WM_APP_MUSIC, MUSIC_FOUND, (LPARAM)out)) delete out;
+    delete q;
+    return 0;
+}
+void Music_Search(const std::wstring& query) {
+    auto* q = new std::wstring(query);
+    for (auto& c : *q)  // nichts, was die Befehlszeile aufbrechen könnte
+        if (c == L'"' || c == L'\\' || c < 32) c = L' ';
+    HANDLE t = CreateThread(nullptr, 0, SearchThread, q, 0, nullptr);
+    if (t) CloseHandle(t);
+    else delete q;
 }

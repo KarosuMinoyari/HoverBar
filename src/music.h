@@ -9,7 +9,7 @@
 
 enum { WM_APP_MUSIC = WM_APP + 40 };
 // wParam: MUSIC_SONG (lParam = Song*, Empfänger löscht), MUSIC_JOBS (Fortschritt), MUSIC_COVERS (lParam = CoverResults*)
-enum { MUSIC_SONG = 1, MUSIC_JOBS = 2, MUSIC_COVERS = 3, MUSIC_WAVE = 4, MUSIC_TOOL = 5, MUSIC_LYRICS = 6, MUSIC_SYNC = 7, MUSIC_PLAYED = 8 };  // PLAYED: lParam = std::wstring* (Song-ID), Empfänger löscht
+enum { MUSIC_SONG = 1, MUSIC_JOBS = 2, MUSIC_COVERS = 3, MUSIC_WAVE = 4, MUSIC_TOOL = 5, MUSIC_LYRICS = 6, MUSIC_SYNC = 7, MUSIC_PLAYED = 8, MUSIC_SUGGEST = 9, MUSIC_FOUND = 10 };  // FOUND: Suchtreffer (std::vector<Suggestion>*)  // PLAYED: lParam = std::wstring* (Song-ID), Empfänger löscht
 
 // ---- Musik-Sync (Erweiterung): Songs in einem Cloud-Ordner, dazu HoverBar-Bibliothek.json mit Playlists, Favoriten und Covern (Cover\ daneben).
 // Die Datei ist das Austauschformat für andere Geräte (z. B. eine Handy-App): Dateinamen sind relativ zum Ordner.
@@ -66,6 +66,7 @@ struct Song {
     std::wstring id, file, title, artist, cover, url;
     int duration = 0;  // Sekunden
     int plays = 0;     // wie oft abgespielt
+    std::wstring playlist;  // nur beim Import: in diese Playlist legen (wird nicht gespeichert)
 };
 
 struct Playlist {
@@ -78,6 +79,8 @@ struct DownloadJob {
     int percent = 0;
     int stage = 0;  // 0 wartet, 1 lädt, 2 wandelt um, 3 Cover, 4 fertig, -1 Fehler
     std::wstring error;
+    std::wstring artist, name, playlist;  // beim Import / bei Vorschlägen: bekannte Angaben
+    int seconds = 0;
 };
 
 struct CoverResults {
@@ -100,6 +103,16 @@ void Music_AddUrl(const std::wstring& url);
 std::vector<DownloadJob> Music_Jobs();
 void Music_ClearFinishedJobs();
 bool Music_ToolAvailable();
+// Titel suchen (YouTube) und laden; seconds = erwartete Länge, es zählt nur ein Video mit ±5 s (0 = egal), playlist = danach dort einsortieren
+void Music_AddSearch(const std::wstring& artist, const std::wstring& name, int seconds, const std::wstring& playlist);
+// Spotify-Export (CSV, z. B. von Exportify): fehlende Titel laden, vorhandene nur in die Playlist legen; Anzahl Titel, -1 = Datei nicht lesbar
+int Music_ImportCsv(const std::wstring& file, int& downloads);
+// ---- Vorschläge (Deezer): ähnliche Künstler zu den meistgehörten; Ergebnis als MUSIC_SUGGEST (lParam = std::vector<Suggestion>*, Empfänger löscht)
+struct Suggestion { std::wstring artist, title, preview; int seconds = 0; bool added = false; std::wstring url; };  // url: YouTube-Treffer
+void Music_Suggest();
+void Music_Search(const std::wstring& query);             // YouTube durchsuchen (braucht yt-dlp)
+void Music_AddToPlaylist(const std::wstring& name, const std::wstring& id);  // Playlist anlegen, falls es sie nicht gibt
+void Music_PlayPreview(const std::wstring& url);           // 30-s-Hörprobe; leer = stoppen
 
 // ---- Bearbeiten
 void Music_UpdateMeta(const std::wstring& id, const std::wstring& title, const std::wstring& artist);

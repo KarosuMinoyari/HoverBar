@@ -221,7 +221,7 @@ struct AppFolder {
     int shown = 0;  // davon direkt in der Ordnerkarte sichtbar
 };
 
-enum class View { Folders, Folder, Search, Settings, Music, MusicList, SongEdit, MusicSettings, AllApps, Calendar, Storage, Chat, NowPlaying, Timer };
+enum class View { Folders, Folder, Search, Settings, Music, MusicList, SongEdit, MusicSettings, AllApps, Calendar, Storage, Chat, NowPlaying, Timer, Suggest };
 enum class HT {
     None, Card, Slot, Mini, Cell, Back, Menu, Gear,
     // Einstellungen
@@ -232,7 +232,7 @@ enum class HT {
     // Musik
     MusicJob, MusicEmpty, MCard, MTile, MMore, MPlayAll, MRow, PlHead, PlUp, PlDown, PlDelete, PlDrop, PlSongRow,
     AllSongRow, AllSongAdd, AllSongEdit, MusicOpen, MProgress, EditCover, EditBtn, EditInfo, CoverPick, EditLabel, EditField,
-    MAlbum, VolIcon, MusicManage, MSize, MSort, GrabKeyBtn, MReload, TimerWheel, TimerShow, TimerBtn, CtlKeyBtn
+    MAlbum, VolIcon, MusicManage, MSize, MSort, GrabKeyBtn, MReload, TimerWheel, TimerShow, TimerBtn, CtlKeyBtn, ImportBtn, SuggestRow, SuggestAdd, SuggestInfo, SuggestReload
 };
 struct Hit {
     RECT rc;
@@ -525,6 +525,11 @@ struct State {
     UINT ctlKey[5] = {VK_HOME, VK_NEXT, VK_PRIOR, VK_OEM_PLUS, VK_OEM_MINUS};
     int ctlCapture = -1;                         // wartet auf die neue Taste für diese Funktion
     bool calendarOn = true;                      // Kalender-Seite
+    bool suggestOn = false, suggestBusy = false, suggestDone = false;  // Erweiterung "Vorschläge"
+    std::vector<Suggestion> suggestions;
+    int previewing = -1;
+    bool showSearch = false, searchBusy = false;  // die Vorschläge-Seite zeigt gerade Suchtreffer
+    std::vector<Suggestion> found;
     bool kbdNav = false;                        // zuletzt mit Pfeiltasten navigiert (Enter aktiviert dann die Markierung)
     bool sortPlays = false;                    // "Alle Songs" nach Wiedergaben statt Titel
     bool hotCapture = false;                     // wartet in den Einstellungen auf eine neue Taste
@@ -648,6 +653,7 @@ static void InitIni() {
     g.musicOn = GetPrivateProfileIntW(L"Funktionen", L"MusikPlayer", 1, g.ini.c_str()) != 0;
     g.claudeOn = GetPrivateProfileIntW(L"Erweiterungen", L"Claude", 0, g.ini.c_str()) != 0;
     g.timerOn = GetPrivateProfileIntW(L"Erweiterungen", L"Timer", 0, g.ini.c_str()) != 0;
+    g.suggestOn = GetPrivateProfileIntW(L"Erweiterungen", L"Vorschlaege", 0, g.ini.c_str()) != 0;
     g.appsOn = GetPrivateProfileIntW(L"Funktionen", L"AppLauncher", 1, g.ini.c_str()) != 0;
     g.calendarOn = GetPrivateProfileIntW(L"Funktionen", L"Kalender", 1, g.ini.c_str()) != 0;
     g.wheel[0] = GetPrivateProfileIntW(L"Timer", L"Stunden", 0, g.ini.c_str()) % 24;
@@ -1615,6 +1621,14 @@ static void LayoutSuggested(int W, int pad, int y0) {
         if (g.timerOn) g.hits.push_back({{pad + cw - S(16) - 2 * bw - S(10), by4, pad + cw - S(16) - bw - S(10), by4 + bh}, HT::PlugBtn, 13});
         y += ch4 + S(12);
     }
+    {   // Vorschläge
+        int ch5 = S(130);
+        g.hits.push_back({{pad, y, pad + cw, y + ch5}, HT::PlugCard, 4});
+        int by5 = y + ch5 - S(14) - bh;
+        g.hits.push_back({{pad + cw - S(16) - bw, by5, pad + cw - S(16), by5 + bh}, HT::PlugBtn, 14});
+        if (g.suggestOn) g.hits.push_back({{pad + cw - S(16) - 2 * bw - S(10), by5, pad + cw - S(16) - bw - S(10), by5 + bh}, HT::PlugBtn, 15});
+        y += ch5 + S(12);
+    }
     g.contentH = y - y0;
 }
 
@@ -1642,7 +1656,7 @@ static void LayoutFunctions(int W, int pad, int y0) {
         y += ch + gap;
     }
     {   // Musik: Hauptschalter, die übrigen Optionen nur, wenn er an ist
-        int ch = headH + (g.musicOn ? 6 : 1) * rowH2 + ip;
+        int ch = headH + (g.musicOn ? 7 : 1) * rowH2 + ip;
         g.hits.push_back({{pad, y, pad + cw, y + ch}, HT::SetCard, -5, -5});
         g.hits.push_back({{pad, y, pad + cw, y + headH}, HT::SetSection, 4});
         int ry = y + headH;
@@ -1662,6 +1676,10 @@ static void LayoutFunctions(int W, int pad, int y0) {
             RECT fr = {pad + ip, ry, pad + cw - ip, ry + rowH2};
             g.hits.push_back({fr, HT::SetRowLabel, 23});
             g.hits.push_back({{fr.right - bw - S(6), fr.top + (rowH2 - bh) / 2, fr.right - S(6), fr.top + (rowH2 + bh) / 2}, HT::FolderBtn, 0});
+            ry += rowH2;
+            RECT ir = {pad + ip, ry, pad + cw - ip, ry + rowH2};
+            g.hits.push_back({ir, HT::SetRowLabel, 34});
+            g.hits.push_back({{ir.right - bw - S(6), ir.top + (rowH2 - bh) / 2, ir.right - S(6), ir.top + (rowH2 + bh) / 2}, HT::ImportBtn, 0});
             ry += rowH2;
         }
         y += ch + gap;
@@ -1919,7 +1937,14 @@ static int LyricIndex(double pos) {
 static void LayoutMusic(int W, int pad, int y0) {
     int cw = W - 2 * pad;
     int y = y0;
-    g.jobsView = Music_Jobs();  // (Lautstärke sitzt jetzt unten in der Musikleiste)
+    g.jobsView = Music_Jobs();
+    if (g.jobsView.size() > 5) {  // nach einem Import: nur die nächsten offenen und fehlgeschlagene
+        std::vector<DownloadJob> open;
+        for (auto& j : g.jobsView)
+            if (j.stage != 4 && open.size() < 5) open.push_back(j);
+        g.jobsView = open;
+    }
+  // (Lautstärke sitzt jetzt unten in der Musikleiste)
     for (int j = 0; j < (int)g.jobsView.size(); j++) {
         g.hits.push_back({{pad, y, pad + cw, y + S(52)}, HT::MusicJob, j});
         y += S(58);
@@ -2160,6 +2185,8 @@ static void PickRingtone() {
     }
     dlg->Release();
 }
+static bool SuggestBusy() { return g.showSearch ? g.searchBusy : g.suggestBusy; }
+static const std::vector<Suggestion>& SuggestList() { return g.showSearch ? g.found : g.suggestions; }
 static void LayoutTimer(int W, int pad) {
     int cw = W - 2 * pad, y = ContentTop() + S(4), rowH = S(44), bh = S(44), half = (cw - S(10)) / 2;
     bool idle = !g.timerEnd && !g.timerLeft && !g.timerRinging;
@@ -2180,6 +2207,48 @@ static void LayoutTimer(int W, int pad) {
     g.hits.push_back({{pad, y, g.ringFile.empty() ? pad + cw : pad + half, y + bh}, HT::TimerBtn, 2});  // Klingelton
     if (!g.ringFile.empty()) g.hits.push_back({{pad + cw - half, y, pad + cw, y + bh}, HT::TimerBtn, 3});  // Standardton
     g.contentH = 0;
+}
+static void Message(const std::wstring& text) {
+    g.menuOpen = true;
+    MessageBoxW(g.hwnd, text.c_str(), L"HoverBar", MB_OK | MB_ICONINFORMATION | MB_TOPMOST);
+    g.menuOpen = false;
+}
+static void NeedTool() { Message(L"Dafür braucht HoverBar yt-dlp. Lade es unter Funktionen → yt-dlp herunter."); }
+static void ImportSpotify() {
+    if (!Music_ToolAvailable()) { NeedTool(); return; }
+    IFileOpenDialog* dlg = nullptr;
+    if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dlg)))) return;
+    COMDLG_FILTERSPEC spec[] = {{L"Playlist als CSV", L"*.csv"}};
+    dlg->SetFileTypes(1, spec);
+    dlg->SetTitle(L"Exportierte Spotify-Playlist wählen");
+    g.menuOpen = true;
+    HRESULT hr = dlg->Show(g.hwnd);
+    g.menuOpen = false;
+    SetForegroundWindow(g.hwnd);
+    std::wstring file;
+    IShellItem* it = nullptr;
+    if (SUCCEEDED(hr) && SUCCEEDED(dlg->GetResult(&it))) {
+        PWSTR p = nullptr;
+        if (SUCCEEDED(it->GetDisplayName(SIGDN_FILESYSPATH, &p))) { file = p; CoTaskMemFree(p); }
+        it->Release();
+    }
+    dlg->Release();
+    if (file.empty()) return;
+    Music_Init(g.hwnd);
+    int downloads = 0, total = Music_ImportCsv(file, downloads);
+    BuildMusic();
+    if (total < 0) Message(L"Die Datei ließ sich nicht lesen. Erwartet wird ein CSV mit den Spalten \"Track Name\" und \"Artist Name(s)\".");
+    else Message(std::to_wstring(total) + L" Titel gefunden, " + std::to_wstring(downloads) + L" werden jetzt nacheinander geladen. Lass HoverBar solange laufen. "
+                 L"Gibt es kein Video mit passender Länge (±5 s), bleibt der Titel als fehlgeschlagen in der Bibliothek stehen.");
+}
+static void AddFound(int i) {  // Vorschlag oder Suchtreffer laden
+    auto& list = g.showSearch ? g.found : g.suggestions;
+    if (i < 0 || i >= (int)list.size() || list[i].added) return;
+    if (!Music_ToolAvailable()) { NeedTool(); return; }
+    auto& s = list[i];
+    if (s.url.empty()) Music_AddSearch(s.artist, s.title, s.seconds, L"");
+    else Music_AddUrl(s.url);
+    s.added = true;
 }
 static void TimerButton(int i) {
     if (i == 2) PickRingtone();
@@ -2293,6 +2362,16 @@ static void Layout() {
         LayoutMusicList(W, pad, y0);
     } else if (g.view == View::SongEdit) {
         LayoutSongEdit(W, pad, y0);
+    } else if (g.view == View::Suggest) {
+        int cw = W - 2 * pad, y = y0, rh = S(58);
+        if (!g.showSearch) g.hits.push_back({{W - pad - S(110), S(60), W - pad, S(92)}, HT::SuggestReload, 0});
+        if (SuggestBusy() || SuggestList().empty()) g.hits.push_back({{pad, y, pad + cw, y + S(60)}, HT::SuggestInfo, 0});
+        else
+            for (int i = 0; i < (int)SuggestList().size(); i++, y += rh + S(4)) {
+                g.hits.push_back({{pad, y, pad + cw, y + rh}, HT::SuggestRow, i});
+                g.hits.push_back({{pad + cw - S(50), y + S(9), pad + cw - S(8), y + rh - S(9)}, HT::SuggestAdd, i});
+            }
+        g.contentH = y - y0;
     } else if (g.view == View::Timer) {
         LayoutTimer(W, pad);
     } else if (g.view == View::Chat) {
@@ -2466,6 +2545,7 @@ static std::wstring HeaderTitle() {
     if (g.view == View::Storage) return L"Speicher";
     if (g.view == View::Chat) return L"Claude";
     if (g.view == View::Timer) return L"Timer";
+    if (g.view == View::Suggest) return g.showSearch ? L"Suchtreffer" : L"Vorschläge";
     if (g.view == View::NowPlaying) return L"Läuft gerade";
     return L"Apps";
 }
@@ -2477,6 +2557,7 @@ static std::vector<int> NavPages() {
     if (g.musicOn) p.push_back(1);
     if (g.calendarOn) p.push_back(2);
     if (g.timerOn) p.push_back(5);  // Timer (Erweiterung)
+    if (g.suggestOn && g.musicOn) p.push_back(6);  // Vorschläge (Erweiterung)
     if (g.claudeOn) p.push_back(4);  // Claude-Chat (Erweiterung)
     if (g.appsOn && !WizTree_Exe().empty()) p.push_back(3);
     return p;
@@ -2485,6 +2566,7 @@ static int NavPage() {
     if (g.view == View::Storage) return 3;
     if (g.view == View::Chat) return 4;
     if (g.view == View::Timer) return 5;
+    if (g.view == View::Suggest) return g.showSearch ? 1 : 6;
     if (g.view == View::Calendar) return 2;
     if (g.view == View::Music || g.view == View::MusicList || g.view == View::SongEdit || g.view == View::MusicSettings || g.view == View::NowPlaying) return 1;
     return 0;
@@ -3057,6 +3139,33 @@ static void DrawHit(HDC dc, const Hit& h, bool hot, int cardHot) {
     case HT::SetCard:
         FillRound(dc, h.rc, S(18), h.pane == 1 ? cCardHot : cCard);
         break;
+    case HT::ImportBtn:
+        FillRound(dc, h.rc, S(10), hot ? cHover : cSearch);
+        Text(dc, L"Datei wählen …", h.rc, g.fSmall, cText, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        break;
+    case HT::SuggestReload:
+        FillRound(dc, h.rc, S(16), hot ? cCardHot : cCard);
+        Text(dc, L"Neu laden", h.rc, g.fSmall, cText, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        break;
+    case HT::SuggestInfo:
+        Text(dc, SuggestBusy() ? L"Suche …" : g.showSearch ? L"Nichts gefunden." : L"Nichts gefunden. Dafür braucht es Songs mit Künstler und Internet.", h.rc, g.fSmall, cDim, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        break;
+    case HT::SuggestRow:
+    case HT::SuggestAdd: {
+        if (h.idx >= (int)SuggestList().size()) break;
+        const Suggestion& s = SuggestList()[h.idx];
+        if (h.type == HT::SuggestAdd) {
+            FillRound(dc, h.rc, S(20), s.added ? cSearch : hot ? RGB(120, 180, 255) : cAccent);
+            Text(dc, s.added ? L"\uE73E" : L"\uE896", h.rc, g.fGlyph, RGB(255, 255, 255), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            break;
+        }
+        FillRound(dc, h.rc, S(12), hot ? cHover : cCard);
+        Text(dc, g.showSearch ? L"\uEC4F" : g.previewing == h.idx ? L"\uE769" : L"\uE768", {h.rc.left + S(6), h.rc.top, h.rc.left + S(42), h.rc.bottom}, g.fGlyph, cText, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        int mid = (h.rc.top + h.rc.bottom) / 2;
+        Text(dc, s.title, {h.rc.left + S(48), h.rc.top + S(4), h.rc.right - S(58), mid + S(2)}, g.fHead, cText, DT_LEFT | DT_BOTTOM | DT_SINGLELINE | DT_END_ELLIPSIS);
+        Text(dc, s.artist, {h.rc.left + S(48), mid + S(2), h.rc.right - S(58), h.rc.bottom - S(4)}, g.fSmall, cDim, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS);
+        break;
+    }
     case HT::TimerWheel:
     case HT::TimerShow:
     case HT::TimerBtn:
@@ -3081,6 +3190,13 @@ static void DrawHit(HDC dc, const Hit& h, bool hot, int cardHot) {
         if (h.idx >= 28 && h.idx <= 32) {
             static const wchar_t* names[] = {L"Play / Pause", L"Nächster Song", L"Voriger Song", L"Lauter", L"Leiser"};
             Text(dc, names[h.idx - 28], {h.rc.left + S(8), h.rc.top, h.rc.right - S(176), h.rc.bottom}, g.fText, cText, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+            break;
+        }
+        if (h.idx == 34) {
+            RECT a = {h.rc.left + S(8), h.rc.top, h.rc.right - S(170), (h.rc.top + h.rc.bottom) / 2 + S(1)};
+            RECT b = {a.left, a.bottom, a.right, h.rc.bottom};
+            Text(dc, L"Spotify-Playlist", a, g.fText, cText, DT_LEFT | DT_BOTTOM | DT_SINGLELINE | DT_END_ELLIPSIS);
+            Text(dc, L"CSV-Export (z. B. Exportify)", b, g.fSmall, cDim, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS);
             break;
         }
         if (h.idx == 33) {
@@ -3313,6 +3429,19 @@ static void DrawHit(HDC dc, const Hit& h, bool hot, int cardHot) {
                  g.claudeOn ? RGB(110, 210, 140) : cDim, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
             break;
         }
+        if (h.idx == 4) {  // Vorschläge
+            FillRound(dc, h.rc, S(18), cCard);
+            RECT ic = {h.rc.left + S(18), h.rc.top + S(18), h.rc.left + S(18) + S(44), h.rc.top + S(18) + S(44)};
+            FillRound(dc, ic, S(12), RGB(150, 100, 220));
+            Text(dc, L"\uE734", ic, g.fGlyphL, RGB(255, 255, 255), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            int tx = ic.right + S(14);
+            Text(dc, L"Songvorschläge", {tx, h.rc.top + S(16), h.rc.right - S(18), h.rc.top + S(40)}, g.fHead, cText, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            Text(dc, L"Von Deezer; übertragen werden nur Künstlernamen.", {tx, h.rc.top + S(40), h.rc.right - S(18), h.rc.top + S(60)}, g.fSmall, cDim,
+                 DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+            Text(dc, g.suggestOn ? L"Hinzugefügt" : L"Nicht hinzugefügt", {h.rc.left + S(18), h.rc.bottom - S(50), h.rc.right - S(340), h.rc.bottom - S(14)}, g.fSmall,
+                 g.suggestOn ? RGB(110, 210, 140) : cDim, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            break;
+        }
         if (h.idx == 3) {  // Timer
             FillRound(dc, h.rc, S(18), cCard);
             RECT ic = {h.rc.left + S(18), h.rc.top + S(18), h.rc.left + S(18) + S(44), h.rc.top + S(18) + S(44)};
@@ -3397,6 +3526,11 @@ static void DrawHit(HDC dc, const Hit& h, bool hot, int cardHot) {
                 Text(dc, ss.state == 1 ? L"Bitte warten …" : g.syncOn ? L"Jetzt abgleichen" : L"Einrichten …", h.rc, g.fHead, RGB(255, 255, 255),
                      DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             }
+            break;
+        }
+        if (h.idx == 14 || h.idx == 15) {  // Vorschläge
+            FillRound(dc, h.rc, S(10), h.idx == 15 ? (hot ? RGB(200, 60, 60) : cSearch) : hot ? RGB(120, 180, 255) : cAccent);
+            Text(dc, h.idx == 15 ? L"Entfernen" : g.suggestOn ? L"Öffnen" : L"Hinzufügen", h.rc, g.fHead, RGB(255, 255, 255), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             break;
         }
         if (h.idx == 12 || h.idx == 13) {  // Timer
@@ -4316,7 +4450,7 @@ static void DrawScene(HDC dc, int W, int H) {
             bool sel = NavPage() == h.idx;
             if (sel) FillRound(dc, h.rc, S(12), cAccent);
             else if (i == g.hot) FillRound(dc, h.rc, S(12), cHover);
-            static const wchar_t* gl[6] = {L"\uE80F", L"\uEC4F", L"\uE787", L"\uEDA2", L"\uE8BD", L"\uE916"};
+            static const wchar_t* gl[7] = {L"\uE80F", L"\uEC4F", L"\uE787", L"\uEDA2", L"\uE8BD", L"\uE916", L"\uE734"};
             if (h.idx == 4) {  // Claude: das echte Claude-Symbol (von claude.ai), bis es geladen ist ein Sprechblasen-Symbol
                 int px = S(28);
                 if (HBITMAP cb = ClaudeIcon(px)) {
@@ -4354,7 +4488,7 @@ static void DrawScene(HDC dc, int W, int H) {
     } else {
         if (g.view == View::Music) {
             DrawField(dc, {pad, S(58), W - pad, S(94)}, g.query,
-                      Music_ToolAvailable() ? L"YouTube-Link einfügen (Strg+V), dann Enter" : L"YouTube-Link einfügen, dann Enter (yt-dlp wird dann geladen)", true);
+                      Music_ToolAvailable() ? L"Song suchen oder YouTube-Link einfügen, dann Enter" : L"YouTube-Link einfügen, dann Enter (yt-dlp wird dann geladen)", true);
         } else if (g.view == View::MusicList) {
             size_t n = MusicListItems(g.curPlaylist).size();
             Text(dc, std::to_wstring(n) + (n == 1 ? L" Song" : L" Songs"), {pad + S(4), S(58), W - pad, S(94)}, g.fText, cDim, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
@@ -4366,6 +4500,8 @@ static void DrawScene(HDC dc, int W, int H) {
             Text(dc, st.empty() ? L"claude.ai – angemeldet bleibst du dauerhaft" : st, {pad + S(4), S(58), W - pad - S(140), S(94)}, g.fSmall, cDim,
                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
             FillRound(dc, g.chatRect, S(12), cSearch);  // sichtbar, bis das Chat-Fenster darüber liegt
+        } else if (g.view == View::Suggest) {
+            Text(dc, g.showSearch ? L"YouTube · Klick lädt den Song" : L"Passend zu deinen meistgehörten Künstlern", {pad + S(4), S(58), W - pad - S(120), S(94)}, g.fSmall, cDim, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
         } else if (g.view == View::Timer) {
             Text(dc, g.timerRinging ? L"Klingelt" : g.timerEnd ? L"Läuft" : g.timerLeft ? L"Angehalten" : L"Dauer wählen: ziehen oder Mausrad",
                  {pad + S(4), S(58), W - pad, S(94)}, g.fSmall, cDim, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
@@ -4388,7 +4524,7 @@ static void DrawScene(HDC dc, int W, int H) {
     }
 
     int top = ContentTop();
-    if (!g.loaded && g.view != View::Settings && !MusicView() && g.view != View::Timer) {
+    if (!g.loaded && g.view != View::Settings && !MusicView() && g.view != View::Timer && g.view != View::Suggest) {
         Text(dc, L"Apps werden geladen …", {0, top + S(40), W, top + S(80)}, g.fText, cDim, DT_CENTER | DT_SINGLELINE);
     } else if (g.view == View::Search && g.results.empty() && g.namingFor < 0) {
         Text(dc, L"Keine Treffer", {0, top + S(40), W, top + S(80)}, g.fText, cDim, DT_CENTER | DT_SINGLELINE);
@@ -5316,6 +5452,7 @@ static void FinishClose() {
     Pool_Stop();       // Hilfs-Threads beenden
     FreeCovers();
     KillTimer(g.hwnd, T_PLAYER);
+    if (g.previewing >= 0) { g.previewing = -1; Music_PlayPreview(L""); }
     KillTimer(g.hwnd, T_RELOAD);  // beim nächsten Öffnen wird ohnehin neu gelesen
     g.reload = 0;
     g.ctlCapture = -1;
@@ -5584,6 +5721,13 @@ static void EndApp(int idx) {
 }
 
 static void ShowView(View v, int folder);
+static void StartSuggest() {
+    if (g.suggestBusy) return;
+    Music_PlayPreview(L"");
+    g.previewing = -1;
+    g.suggestBusy = g.suggestDone = true;
+    Music_Suggest();
+}
 // Seite der Navigationsleiste öffnen
 static void GoToPage(int p) {
     g.query.clear();
@@ -5593,6 +5737,11 @@ static void GoToPage(int p) {
     else if (p == 3 && !WizTree_Exe().empty()) ShowView(View::Storage, -1);
     else if (p == 4) ShowView(View::Chat, -1);
     else if (p == 5) ShowView(View::Timer, -1);
+    else if (p == 6) {
+        g.showSearch = false;
+        if (!g.suggestDone) StartSuggest();
+        ShowView(View::Suggest, -1);
+    }
     else if (p == 2) {
         if (!g.eventsLoaded) LoadEvents();
         if (!g.calY) {
@@ -7321,6 +7470,30 @@ static void Activate(int hitIdx, bool right) {
         return;
     }
     switch (h.type) {
+    case HT::ImportBtn:
+        ImportSpotify();
+        Refresh();
+        break;
+    case HT::SuggestReload:
+        StartSuggest();
+        Refresh();
+        break;
+    case HT::SuggestRow:  // Hörprobe an/aus; ein Suchtreffer wird geladen
+        if (g.showSearch) { AddFound(h.idx); Render(); break; }
+        if (h.idx < (int)g.suggestions.size()) {
+            g.previewing = g.previewing == h.idx ? -1 : h.idx;
+            if (g.previewing >= 0) {
+                PlayerState ps = Player_State();
+                if (ps.active && ps.playing) Player_Toggle();
+            }
+            Music_PlayPreview(g.previewing >= 0 ? g.suggestions[g.previewing].preview : L"");
+            Render();
+        }
+        break;
+    case HT::SuggestAdd:
+        AddFound(h.idx);
+        Render();
+        break;
     case HT::TimerBtn:
         TimerButton(h.idx);
         Refresh();
@@ -7724,6 +7897,17 @@ static void Activate(int hitIdx, bool right) {
             Refresh();
             break;
         }
+        if (h.idx == 14 || h.idx == 15) {  // Vorschläge hinzufügen / öffnen / entfernen
+            if (h.idx == 14 && g.suggestOn) {
+                if (g.musicOn) GoToPage(6);
+                else Message(L"Schalte dafür den Musik-Player ein.");
+                break;
+            }
+            g.suggestOn = h.idx == 14;
+            IniSet(L"Erweiterungen", L"Vorschlaege", g.suggestOn ? L"1" : L"0");
+            Refresh();
+            break;
+        }
         if (h.idx == 12 || h.idx == 13) {  // Timer hinzufügen / öffnen / entfernen
             if (h.idx == 12 && g.timerOn) { GoToPage(5); break; }
             g.timerOn = h.idx == 12;
@@ -8107,7 +8291,7 @@ static bool Focusable(HT t) {
     switch (t) {
     case HT::None: case HT::SetCard: case HT::SetSection: case HT::SetRowLabel: case HT::Pane: case HT::PaneTitle: case HT::MusicEmpty:
     case HT::EditInfo: case HT::EditLabel: case HT::PlugCard: case HT::NavBar: case HT::MusicBar: case HT::RecentCard: case HT::CalHead:
-    case HT::CalInfo: case HT::GameHead: case HT::SetHiddenHead: case HT::SetDrop: case HT::PlDrop: case HT::TimerWheel: case HT::TimerShow: return false;
+    case HT::CalInfo: case HT::GameHead: case HT::SetHiddenHead: case HT::SetDrop: case HT::PlDrop: case HT::TimerWheel: case HT::TimerShow: case HT::SuggestInfo: return false;
     default: return true;
     }
 }
@@ -8172,7 +8356,8 @@ static void OnKeyDown(WPARAM vk) {
         else if (g.view == View::Music && g.query.empty() && g.libTab != 0) { g.libTab = 0; g.scroll = 0; Refresh(); }
         else if (!g.query.empty()) { g.query.clear(); OnQueryChanged(); }
         else if (g.view == View::MusicList || g.view == View::MusicSettings) ShowView(View::Music);
-        else if (g.view == View::Folder || g.view == View::Settings || g.view == View::Music || g.view == View::AllApps || g.view == View::Calendar || g.view == View::Storage || g.view == View::Chat || g.view == View::Timer) {
+        else if (g.view == View::Folder || g.view == View::Settings || g.view == View::Music || g.view == View::AllApps || g.view == View::Calendar || g.view == View::Storage || g.view == View::Chat || g.view == View::Timer || g.view == View::Suggest) {
+            if (g.view == View::Suggest && g.showSearch) { ShowView(View::Music); return; }
             if (!g.appsOn && g.view == View::Music) CloseBar(L"Esc");
             else ShowView(View::Folders);
         }
@@ -8188,7 +8373,17 @@ static void OnKeyDown(WPARAM vk) {
             std::wstring u = g.query;
             if (!u.empty()) {
                 g.query.clear();
-                QueueLink(u);
+                if (!AsLink(u).empty()) QueueLink(u);
+                else if (!Music_ToolAvailable()) NeedTool();
+                else if (!g.searchBusy) {  // kein Link: auf YouTube suchen
+                    Music_PlayPreview(L"");
+                    g.previewing = -1;
+                    g.showSearch = g.searchBusy = true;
+                    g.found.clear();
+                    Music_Search(u);
+                    ShowView(View::Suggest);
+                    return;
+                }
                 Refresh();
             }
         } else if (g.namingFor >= 0 || g.creatingFolder) FinishNaming();
@@ -8223,7 +8418,7 @@ static void OnKeyDown(WPARAM vk) {
 
 static bool TypingAllowed() {
     // Design-Seite hat kein Textfeld
-    return !(g.view == View::Settings && g.setTab != 1) && g.view != View::NowPlaying && g.view != View::Timer;
+    return !(g.view == View::Settings && g.setTab != 1) && g.view != View::NowPlaying && g.view != View::Timer && g.view != View::Suggest;
 }
 
 // Lautstärkeregler aus-/einklappen je nachdem, ob die Maus darauf ist (einklappen mit kurzer Verzögerung)
@@ -8778,11 +8973,27 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 Music_Save();
                 // Reihenfolge erst beim nächsten Öffnen neu: Zeilen sollen nicht unter der Maus wegspringen
             }
+        } else if (wp == MUSIC_FOUND) {
+            auto* r = (std::vector<Suggestion>*)lp;
+            g.found = *r;
+            delete r;
+            g.searchBusy = false;
+            if (g.open && !g.closing && g.view == View::Suggest) Refresh();
+        } else if (wp == MUSIC_SUGGEST) {
+            auto* r = (std::vector<Suggestion>*)lp;
+            g.suggestions = *r;
+            delete r;
+            g.suggestBusy = false;
+            g.previewing = -1;
+            if (g.open && !g.closing && g.view == View::Suggest) Refresh();
         } else if (wp == MUSIC_SONG) {
             auto* s = (Song*)lp;
             int i = Music_Find(s->id);
             if (i >= 0) { s->plays = Music_Songs()[i].plays; Music_Songs()[i] = *s; }
             else Music_Songs().push_back(*s);
+            if (!s->playlist.empty()) {  // Import: in die Playlist, Zweifelsfälle zusätzlich zum Nachhören
+                Music_AddToPlaylist(s->playlist, s->id);
+            }
             delete s;
             Music_Save();
             BuildMusic();

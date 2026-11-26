@@ -17,6 +17,8 @@ import kotlinx.coroutines.sync.withLock
 import org.json.JSONObject
 import java.io.File
 
+data class Found(val id: String, val title: String, val channel: String, val seconds: Int)
+
 data class SongInfo(val id: String, val title: String, val artist: String, val durationSec: Int, val cuts: String = "")
 
 /**
@@ -25,6 +27,39 @@ data class SongInfo(val id: String, val title: String, val artist: String, val d
  * Die App legt zusätzlich eine Kopie in den Cloud-Ordner (siehe Upload).
  */
 object Downloader {
+    /** Suchtreffer; null = keine Suche offen. */
+    val results = MutableStateFlow<List<Found>?>(null)
+    val searching = MutableStateFlow(false)
+
+    /** Zeilen "<Video-ID>|<Sekunden>|<Kanal>|<Titel>"; andere (Warnungen) zählen nicht. */
+    fun parseSearch(out: String): List<Found> = out.lineSequence().mapNotNull {
+        val p = it.trimEnd('\r').split('|', limit = 4)
+        if (p.size == 4 && p[0].length == 11) Found(p[0], p[3], p[2], p[1].toDoubleOrNull()?.toInt() ?: 0) else null
+    }.toList()
+
+    fun search(ctx: Context, query: String) {
+        val app = ctx.applicationContext
+        if (query.isBlank() || searching.value) return
+        searching.value = true
+        results.value = emptyList()
+        scope.launch {
+            mutex.withLock {
+                try {
+                    init(app, false)
+                    val request = YoutubeDLRequest("ytsearch12:${query.trim()}")
+                    request.addOption("--flat-playlist")
+                    request.addOption("--print", "%(id)s|%(duration)s|%(channel)s|%(title)s")
+                    val found = parseSearch(YoutubeDL.getInstance().execute(request, null, null).out)
+                    if (searching.value) results.value = found
+                } catch (e: Throwable) {
+                    status.value = "Suche fehlgeschlagen (Internet?)."
+                    results.value = null
+                }
+                searching.value = false
+            }
+        }
+    }
+
     /** Meldung für die Anzeige, null = nichts zu melden. */
     val status = MutableStateFlow<String?>(null)
     val toolVersion = MutableStateFlow<String?>(null)

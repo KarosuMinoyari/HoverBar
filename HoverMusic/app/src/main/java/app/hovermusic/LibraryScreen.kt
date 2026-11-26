@@ -82,6 +82,11 @@ fun LibraryScreen(vm: MusicViewModel, onOpenNow: () -> Unit, onSettings: () -> U
     var tab by rememberSaveable { mutableIntStateOf(0) }  // 0 Alle Songs, 1 Favoriten, 2 Playlists, 3 Zuletzt
     var openPlaylist by rememberSaveable { mutableStateOf<String?>(null) }
     var showHelp by rememberSaveable { mutableStateOf(false) }
+    var query by rememberSaveable { mutableStateOf("") }
+    val results by Downloader.results.collectAsState()
+    val searching by Downloader.searching.collectAsState()
+    val context = androidx.compose.ui.platform.LocalContext.current
+    BackHandler(enabled = results != null) { Downloader.results.value = null }
 
     BackHandler(enabled = tab != 0) { if (openPlaylist != null) openPlaylist = null else tab = 0 }
 
@@ -95,6 +100,17 @@ fun LibraryScreen(vm: MusicViewModel, onOpenNow: () -> Unit, onSettings: () -> U
             IconButton(onClick = { vm.refresh() }) { Icon(HmIcons.Refresh, "Aktualisieren", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
             IconButton(onClick = onSettings) { Icon(HmIcons.Gear, "Einstellungen", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
         }
+        // Suche auf YouTube: Treffer antippen lädt den Song
+        val focus = androidx.compose.ui.platform.LocalFocusManager.current
+        androidx.compose.material3.OutlinedTextField(
+            value = query, onValueChange = { query = it }, singleLine = true,
+            placeholder = { Text("Song auf YouTube suchen") },
+            shape = RoundedCornerShape(26.dp),
+            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Search),
+            keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSearch = { focus.clearFocus(); Downloader.search(context, query) }),
+            trailingIcon = { if (results != null) TextButton(onClick = { Downloader.results.value = null; query = "" }) { Text("✕") } },
+            modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 12.dp),
+        )
         Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             fun toggle(t: Int) { tab = if (tab == t) 0 else t; openPlaylist = null }
             // blass dahinter: zuletzt hinzugefügter Favorit / neueste Playlist / zuletzt gehört
@@ -123,7 +139,10 @@ fun LibraryScreen(vm: MusicViewModel, onOpenNow: () -> Unit, onSettings: () -> U
 
         Box(Modifier.weight(1f).fillMaxWidth()) {
             val lib = library
-            if (lib == null) {
+            val hits = results
+            if (hits != null) {
+                SearchResults(hits, searching) { Downloader.download(context, "https://youtu.be/${it.id}", toast = true) }
+            } else if (lib == null) {
                 if (!loading && error == null) Text("Keine Bibliothek geladen.", Modifier.padding(20.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
             } else when {
                 tab == 2 && openPlaylist == null -> PlaylistList(vm, lib, onOpen = { openPlaylist = it })
@@ -162,6 +181,25 @@ fun LibraryScreen(vm: MusicViewModel, onOpenNow: () -> Unit, onSettings: () -> U
             text = { Text("Öffne das Video in YouTube, tippe auf „Teilen“ und wähle HoverMusic. Der Song landet auf diesem Handy.\n\nyt-dlp: ${tool ?: "noch nicht geladen"}") },
             confirmButton = { TextButton(onClick = { showHelp = false }) { Text("OK") } },
         )
+    }
+}
+
+@Composable
+private fun SearchResults(hits: List<Found>, searching: Boolean, onPick: (Found) -> Unit) {
+    if (hits.isEmpty()) {
+        Text(if (searching) "Suche …" else "Nichts gefunden.", Modifier.padding(20.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
+        return
+    }
+    LazyColumn(Modifier.fillMaxSize()) {
+        itemsIndexed(hits) { _, f ->
+            Row(Modifier.fillMaxWidth().clickable { onPick(f) }.padding(horizontal = 20.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(f.title, maxLines = 2, overflow = TextOverflow.Ellipsis, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                    Text("${f.channel} · ${fmtTime(f.seconds * 1000L)}", maxLines = 1, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Icon(HmIcons.Download, "Laden", tint = MaterialTheme.colorScheme.primary)
+            }
+        }
     }
 }
 
