@@ -2,6 +2,40 @@
 
 Eine Leiste am rechten Bildschirmrand für Windows: Maus an den Rand halten (oder die Ende-Taste drücken), und es fährt eine Leiste mit deinen Apps, Musik, Kalender, Claude-Chat und Speicherübersicht heraus. Im Ruhezustand braucht sie fast keinen Arbeitsspeicher und läuft im Windows-Effizienzmodus. Eine einzelne `HoverBar.exe`, ohne Installation und ohne Systemeingriffe.
 
+## Funktionen
+
+### HoverBar (Windows)
+
+**Apps**
+- Leiste am rechten Rand, per Maus oder Taste; Apps in Ordnern, Suche durch Lostippen, Startseite mit Favoriten und Links
+- Spieleordner mit Größe, Spielzeit und „zuletzt gespielt“ (Steam, Epic, Riot, eigene Messung)
+- Alle Apps mit Größe und Arbeitsspeicher, laufende beenden
+
+**Musik**
+- Eigener Player mit Playlists, Favoriten, „Zuletzt gespielt“, Sortieren nach Wiedergaben und Songtexten
+- Songs auf YouTube suchen oder per Link/Taste laden, mit Fortschrittsbalken
+- Spotify-Playlist übernehmen (CSV-Export)
+- Songs bearbeiten (Titel, Künstler, Cover) und verlustfrei schneiden
+- Tastensteuerung (anpassbar), leiser bei Videos, wahlweise Spotify steuern
+- Musik-Sync über einen Cloud-Ordner aufs Handy
+
+**Erweiterungen**
+- Kalender (auch Google-Kalender per iCal-Link, nur lesen), To-do-Liste, Timer
+- Songvorschläge mit Hörprobe, Claude-Chat, Speicherübersicht (WizTree)
+
+**Anpassen**
+- Farbe, Glas-Stärke, Hintergrundbild, Schrift, Schriftgröße, Zeilenabstand, Breite
+- Killzone zum Schließen, Home und Kalender abschaltbar (auch als reiner Musik-Player), Symbole sortierbar
+- Pfeiltasten-Bedienung, Tutorial, Update mit Anzeige der Neuerungen
+
+### HoverMusic (Android)
+- Spielt die Musik aus HoverBar, Einrichtung per QR-Code, Wiedergabe im Hintergrund
+- Läuft-gerade-Ansicht mit wischbarem Cover und Songtext
+- YouTube-Suche und Laden (auch über „Teilen“ oder eine Schnelleinstellungs-Kachel), Songvorschläge
+- Bearbeiten, Schneiden, Löschen und Playlists ergänzen; Änderungen gehen an den PC
+- Anpassbares Widget, Farben, Hintergrund, Schrift, Farbe des App-Symbols
+- Update direkt in der App
+
 ## Herunterladen
 
 Unter [Releases](https://github.com/KarosuMinoyari/HoverBar/releases/latest) gibt es zwei Dateien:
@@ -9,7 +43,7 @@ Unter [Releases](https://github.com/KarosuMinoyari/HoverBar/releases/latest) gib
 - **`setupHoverBar.exe`** (empfohlen): richtet alles ein. Kopiert HoverBar nach `%LOCALAPPDATA%\Programs\HoverBar`, legt eine Startmenü-Verknüpfung und einen Eintrag unter „Apps & Features“ an, richtet auf Wunsch den Autostart ein und startet HoverBar. Keine Administratorrechte nötig. Nochmal ausführen aktualisiert, `Deinstallieren.exe` im Programmordner (oder „Apps & Features“) entfernt alles wieder. Windows warnt eventuell („Unbekannter Herausgeber“), weil die Datei nicht signiert ist: *Weitere Informationen → Trotzdem ausführen*.
 - **`HoverBar.exe`**: nur das Programm, in einen beliebigen Ordner legen und starten.
 
-Danach aktualisiert sich HoverBar auf Knopfdruck selbst: Zahnrad → Funktionen → *Nach Update suchen*. Es wird nie automatisch nach Updates gesucht.
+Danach aktualisiert sich HoverBar selbst: Beim Öffnen wird nach neuen Versionen gesucht und gefragt, ob installiert werden soll; von Hand unter Zahnrad → Funktionen → *Nach Update suchen*.
 
 Für den Installer ohne Oberfläche: `setupHoverBar.exe --still` (weitere Schalter: `--kein-autostart`, `--nicht-starten`, `--deinstallieren`).
 
@@ -23,7 +57,6 @@ Die Symbole sind unten angeheftet. Mit dem Mausrad über der Leiste blätterst d
 | --- | --- |
 | Apps | Ordner mit Apps, Favoriten, Favoriten-Links, „Zuletzt genutzt“ (stark nach oben überscrollen). Klick auf „Apps“ zeigt alle Apps mit Größe, laufende mit Arbeitsspeicher und Beenden-Knopf. |
 | Bibliothek | Alle Songs, darüber fest: Favoriten, Playlists, Zuletzt gespielt. |
-| Kalender | Monatsansicht mit Terminen. |
 | Claude | Optionale Erweiterung (Zahnrad → Erweiterungen → *Hinzufügen*). claude.ai eingebettet (WebView2), Anmeldung bleibt gespeichert, der Speicher wird beim Schließen freigegeben. *Entfernen* löscht auch die gespeicherte Anmeldung. |
 | Timer | Optionale Erweiterung (Zahnrad → Erweiterungen). Stunden, Minuten, Sekunden über Ziffernräder (ziehen oder Mausrad), eigener Klingelton (MP3/WAV/M4A). Läuft bei geschlossener Leiste weiter, weckt den PC aber nicht aus dem Ruhezustand. |
 | Vorschläge | Optionale Erweiterung. Songs ähnlicher Künstler zu deinen meistgehörten (Deezer, ohne Konto; übertragen werden nur Künstlernamen). Klick = 30-s-Hörprobe, Pfeil = laden. |
@@ -45,7 +78,7 @@ Die Symbole der linken Leiste lassen sich in den Einstellungen mit der Maus zieh
 - **Suchen:** einfach lostippen, Enter startet den ersten Treffer.
 - **Ordner:** Großes Symbol = App starten, kleine Symbole oder Ordnername = Ordner öffnen. Sortieren, verschieben und ausblenden unter Zahnrad → Ordner oder per Rechtsklick.
 - **Startseite (4 Apps)** und **Favoriten-Links** (kleine Reihe mit Website-Symbol und Name).
-- **Schließen:** Maus an den linken Rand (linke 15 %), Esc, Alt+Tab oder eine App starten.
+- **Schließen:** Maus in die Killzone links (Standard 15 %, einstellbar, wahlweise per Klick), Esc, Alt+Tab oder eine App starten.
 
 ## Musik
 
