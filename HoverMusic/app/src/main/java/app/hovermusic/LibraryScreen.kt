@@ -195,14 +195,24 @@ private fun SearchResults(hits: List<Found>, searching: Boolean, onPick: (Found)
         Text(if (searching) "Suche …" else "Nichts gefunden.", Modifier.padding(20.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
         return
     }
+    val progress by Downloader.progress.collectAsState()
     LazyColumn(Modifier.fillMaxSize()) {
         itemsIndexed(hits) { _, f ->
-            Row(Modifier.fillMaxWidth().clickable { onPick(f) }.padding(horizontal = 20.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+            val p = progress[f.id]
+            Column(Modifier.fillMaxWidth().clickable(enabled = p == null) { onPick(f) }.padding(horizontal = 20.dp, vertical = 10.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text(f.title, maxLines = 2, overflow = TextOverflow.Ellipsis, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
                     Text("${f.channel} · ${fmtTime(f.seconds * 1000L)}", maxLines = 1, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                Icon(HmIcons.Download, "Laden", tint = MaterialTheme.colorScheme.primary)
+                if (p == 1f) Text("✓", fontSize = 20.sp, color = MaterialTheme.colorScheme.primary)
+                else Icon(HmIcons.Download, "Laden", tint = if (p == null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            if (p != null && p < 1f) {  // wartet oder lädt: Balken direkt unter dem Song
+                val bar = Modifier.fillMaxWidth().padding(top = 8.dp).height(4.dp).clip(CircleShape)
+                if (p <= 0f) LinearProgressIndicator(bar) else LinearProgressIndicator(progress = { p }, modifier = bar)
+                Text(if (p < 0f) "Wartet …" else "${(p * 100).toInt()} %", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
             }
         }
     }

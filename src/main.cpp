@@ -3198,7 +3198,22 @@ static void DrawHit(HDC dc, const Hit& h, bool hot, int cardHot) {
         Text(dc, g.showSearch ? L"\uEC4F" : g.previewing == h.idx ? L"\uE769" : L"\uE768", {h.rc.left + S(6), h.rc.top, h.rc.left + S(42), h.rc.bottom}, g.fGlyph, cText, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         int mid = (h.rc.top + h.rc.bottom) / 2;
         Text(dc, s.title, {h.rc.left + S(48), h.rc.top + S(4), h.rc.right - S(58), mid + S(2)}, g.fHead, cText, DT_LEFT | DT_BOTTOM | DT_SINGLELINE | DT_END_ELLIPSIS);
-        Text(dc, s.artist, {h.rc.left + S(48), mid + S(2), h.rc.right - S(58), h.rc.bottom - S(4)}, g.fSmall, cDim, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS);
+        std::wstring sub = s.artist;
+        int percent = -1;  // laufender Download zu diesem Treffer
+        if (s.added)
+            for (const DownloadJob& j : Music_Jobs()) {
+                if (s.url.empty() ? j.name != s.title || j.artist != s.artist : j.url != s.url) continue;
+                percent = j.stage == 1 ? j.percent * 8 / 10 : j.stage == 2 ? 85 : j.stage == 3 ? 95 : j.stage == 4 ? 100 : 0;
+                sub = j.stage == -1 ? L"Fehlgeschlagen: " + j.error : j.stage == 0 ? std::wstring(L"Wartet …") : j.stage == 1 ? L"Lädt … " + std::to_wstring(j.percent) + L" %"
+                    : j.stage == 2 ? std::wstring(L"Wird umgewandelt …") : j.stage == 3 ? std::wstring(L"Cover …") : std::wstring(L"Gespeichert");
+                if (j.stage == -1) percent = -1;
+            }
+        Text(dc, sub, {h.rc.left + S(48), mid + S(2), h.rc.right - S(58), h.rc.bottom - S(7)}, g.fSmall, cDim, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS);
+        if (percent >= 0) {
+            RECT bar = {h.rc.left + S(48), h.rc.bottom - S(6), h.rc.right - S(58), h.rc.bottom - S(3)};
+            FillRound(dc, bar, S(3), cSearch);
+            if (percent > 0) FillRound(dc, {bar.left, bar.top, bar.left + (bar.right - bar.left) * percent / 100, bar.bottom}, S(3), cAccent);
+        }
         break;
     }
     case HT::TimerWheel:
@@ -4562,8 +4577,10 @@ static void DrawScene(HDC dc, int W, int H) {
             Text(dc, st.empty() ? L"claude.ai – angemeldet bleibst du dauerhaft" : st, {pad + S(4), S(58), W - pad - S(140), S(94)}, g.fSmall, cDim,
                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
             FillRound(dc, g.chatRect, S(12), cSearch);  // sichtbar, bis das Chat-Fenster darüber liegt
+        } else if (g.view == View::Suggest && g.showSearch) {
+            DrawField(dc, {pad, S(58), W - pad, S(94)}, g.query, L"Song auf YouTube suchen, dann Enter", true);
         } else if (g.view == View::Suggest) {
-            Text(dc, g.showSearch ? L"YouTube · Klick lädt den Song" : L"Passend zu deinen meistgehörten Künstlern", {pad + S(4), S(58), W - pad - S(120), S(94)}, g.fSmall, cDim, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+            Text(dc, L"Passend zu deinen meistgehörten Künstlern", {pad + S(4), S(58), W - pad - S(120), S(94)}, g.fSmall, cDim, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
         } else if (g.view == View::Timer) {
             Text(dc, g.timerRinging ? L"Klingelt" : g.timerEnd ? L"Läuft" : g.timerLeft ? L"Angehalten" : L"Dauer wählen: ziehen oder Mausrad",
                  {pad + S(4), S(58), W - pad, S(94)}, g.fSmall, cDim, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
@@ -5867,7 +5884,7 @@ static void LeaveNowPlaying() {
 static void OnQueryChanged() {
     g.caretOn = true;
     SetTimer(g.hwnd, T_CARET, 530, nullptr);
-    if (MusicView() && g.view != View::MusicSettings) { Render(); return; }
+    if ((MusicView() && g.view != View::MusicSettings) || g.view == View::Suggest) { Render(); return; }
     if (g.view == View::Settings || g.view == View::MusicSettings) {
         if (!g.creatingFolder) g.scrollR = 0;
         Refresh();
@@ -8499,10 +8516,10 @@ static void OnKeyDown(WPARAM vk) {
             Music_UpdateMeta(g.editId, g.editTitle, g.editArtist);
             BuildMusic();
             LeaveSongEdit();
-        } else if (g.view == View::Music) {
+        } else if (g.view == View::Music || (g.view == View::Suggest && g.showSearch)) {
             std::wstring u = g.query;
             if (!u.empty()) {
-                g.query.clear();
+                if (!AsLink(u).empty()) g.query.clear();  // ein Suchbegriff bleibt zum Ändern stehen
                 if (!AsLink(u).empty()) QueueLink(u);
                 else if (!Music_ToolAvailable()) NeedTool();
                 else if (!g.searchBusy) {  // kein Link: auf YouTube suchen
@@ -8548,7 +8565,7 @@ static void OnKeyDown(WPARAM vk) {
 
 static bool TypingAllowed() {
     // Design-Seite hat kein Textfeld
-    return !(g.view == View::Settings && g.setTab != 1) && g.view != View::NowPlaying && g.view != View::Timer && g.view != View::Suggest;
+    return !(g.view == View::Settings && g.setTab != 1) && g.view != View::NowPlaying && g.view != View::Timer && (g.view != View::Suggest || g.showSearch);
 }
 
 // Lautstärkeregler aus-/einklappen je nachdem, ob die Maus darauf ist (einklappen mit kurzer Verzögerung)
@@ -9154,6 +9171,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         } else if (wp == MUSIC_JOBS) {
             if (g.open && !g.closing && g.view == View::Settings) Render();  // Fortschritt der Musik-Sync-Karte
             if (g.open && !g.closing && g.view == View::Music) Refresh();
+            if (g.open && !g.closing && g.view == View::Suggest) Render();
         } else if (wp == MUSIC_TOOL) {  // yt-dlp: neuer Stand (Fortschritt, fertig, Fehler)
             if (!g.pendingUrl.empty()) {  // ein Link wartet auf den Download
                 ToolStatus ts = Music_ToolStatus();

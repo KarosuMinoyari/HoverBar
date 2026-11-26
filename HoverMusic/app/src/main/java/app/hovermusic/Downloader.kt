@@ -30,6 +30,8 @@ object Downloader {
     /** Suchtreffer; null = keine Suche offen. */
     val results = MutableStateFlow<List<Found>?>(null)
     val searching = MutableStateFlow(false)
+    /** Fortschritt je Video-ID: -1 wartet, 0..1 lädt (1 = gespeichert). */
+    val progress = MutableStateFlow<Map<String, Float>>(emptyMap())
 
     /** Zeilen "<Video-ID>|<Sekunden>|<Kanal>|<Titel>"; andere (Warnungen) zählen nicht. */
     fun parseSearch(out: String): List<Found> = out.lineSequence().mapNotNull {
@@ -139,6 +141,12 @@ object Downloader {
             return
         }
         if (toast) say(app, "Song wird geladen …", true)
+        val video = Regex("""(?:youtu\.be/|[?&]v=)([\w-]{11})""").find(url)?.groupValues?.get(1)
+        fun mark(p: Float?) {
+            if (video == null) return
+            progress.value = if (p == null) progress.value - video else progress.value + (video to p)
+        }
+        mark(-1f)
         scope.launch {
             mutex.withLock {
                 try {
@@ -150,12 +158,18 @@ object Downloader {
                     request.addOption("--write-info-json")
                     request.addOption("--write-thumbnail")
                     request.addOption("-o", File(dir(app), "%(id)s.%(ext)s").absolutePath)
-                    YoutubeDL.getInstance().execute(request, null) { progress, _, _ ->
-                        if (progress > 0) status.value = "Song wird geladen … ${progress.toInt()} %"
+                    mark(0f)
+                    YoutubeDL.getInstance().execute(request, null) { percent, _, _ ->
+                        if (percent > 0) {
+                            status.value = "Song wird geladen … ${percent.toInt()} %"
+                            mark((percent / 100f).coerceAtMost(0.99f))
+                        }
                     }
+                    mark(1f)
                     finished.value++
                     say(app, "Song gespeichert.", toast)
                 } catch (e: Throwable) {
+                    mark(null)
                     say(app, "Download fehlgeschlagen: " + (e.message?.lineSequence()?.lastOrNull { it.isNotBlank() }?.take(140) ?: "unbekannt"), toast)
                 }
             }
