@@ -23,6 +23,7 @@
 #include <cmath>
 #include <cwctype>
 #include <deque>
+#include <random>
 #undef GetCurrentTime
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Foundation.Collections.h>
@@ -2200,13 +2201,21 @@ static std::wstring LowerText(std::wstring s) {
     for (auto& c : s) c = (wchar_t)towlower(c);
     return s;
 }
+static std::vector<std::wstring> g_shownIdeas;  // in dieser Sitzung schon vorgeschlagen (nur ein Lauf gleichzeitig)
+template <class T> static void Mix(std::vector<T>& v) {
+    static std::mt19937 rng{std::random_device{}()};
+    std::shuffle(v.begin(), v.end(), rng);
+}
 static DWORD WINAPI SuggestThread(LPVOID pp) {
     auto* p = (SuggestParams*)pp;
     auto* out = new std::vector<Suggestion>();
     std::vector<std::wstring> seen = p->owned;
+    seen.insert(seen.end(), g_shownIdeas.begin(), g_shownIdeas.end());  // beim Neuladen andere Songs
     auto id = [](const std::string& obj) { return std::to_wstring((long long)JsonNumber(obj, "id")); };
     auto tracks = [&](const std::wstring& artistId, int take) {
-        for (auto& t : JsonObjects(HttpGet(L"https://api.deezer.com/artist/" + artistId + L"/top?limit=8"))) {
+        auto top = JsonObjects(HttpGet(L"https://api.deezer.com/artist/" + artistId + L"/top?limit=30"));
+        Mix(top);
+        for (auto& t : top) {
             size_t a = t.find("\"artist\":{");
             Suggestion s;
             s.title = JsonField(t, "title");
@@ -2228,9 +2237,14 @@ static DWORD WINAPI SuggestThread(LPVOID pp) {
     for (auto& artist : p->artists) {
         auto found = JsonObjects(HttpGet(L"https://api.deezer.com/search/artist?limit=1&q=" + UrlEncode(artist)));
         if (found.empty()) continue;
-        for (auto& r : JsonObjects(HttpGet(L"https://api.deezer.com/artist/" + id(found[0]) + L"/related?limit=3"))) tracks(id(r), 2);
+        auto related = JsonObjects(HttpGet(L"https://api.deezer.com/artist/" + id(found[0]) + L"/related?limit=20"));
+        Mix(related);
+        if (related.size() > 3) related.resize(3);
+        for (auto& r : related) tracks(id(r), 2);
         tracks(id(found[0]), 1);  // und ein Song des Künstlers selbst, den du noch nicht hast
     }
+    for (auto& s : *out) g_shownIdeas.push_back(LowerText(s.title));
+    if (out->empty()) g_shownIdeas.clear();  // alles durch: beim nächsten Mal von vorn
     if (!PostMessageW(g_notify, WM_APP_MUSIC, MUSIC_SUGGEST, (LPARAM)out)) delete out;
     delete p;
     return 0;
@@ -2248,6 +2262,8 @@ void Music_Suggest() {
         else it->first += 1 + s.plays;
     }
     std::stable_sort(top.begin(), top.end(), [](const std::pair<int, std::wstring>& x, const std::pair<int, std::wstring>& y) { return x.first > y.first; });
+    if (top.size() > 12) top.resize(12);
+    Mix(top);  // aus den 12 meistgehörten jedes Mal andere 6
     for (size_t i = 0; i < top.size() && i < 6; i++) p->artists.push_back(top[i].second);
     HANDLE t = CreateThread(nullptr, 0, SuggestThread, p, 0, nullptr);
     if (t) CloseHandle(t);

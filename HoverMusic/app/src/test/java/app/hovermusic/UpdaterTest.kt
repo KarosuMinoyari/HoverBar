@@ -6,6 +6,11 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class UpdaterTest {
+    @Test fun neuerungen() {
+        val json = """[{"tag_name":"hovermusic-v1.2.0","body":"**Neu:** A\n\n**Full Changelog**: x"},{"tag_name":"hovermusic-v1.1.0","body":"B"},{"tag_name":"v9.0.0","body":"PC"}]"""
+        assertEquals("1.2.0\nNeu: A", Updater.notesSince(json, "1.1.0"))
+    }
+
     @Test fun versionen() {
         assertTrue(Updater.isNewer("1.0.0", "0.4.0"))
         assertTrue(Updater.isNewer("1.10", "1.9.3"))

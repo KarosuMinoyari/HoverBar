@@ -14,7 +14,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
 
-data class Release(val version: String, val url: String, val sha256: String)
+data class Release(val version: String, val url: String, val sha256: String, val notes: String = "")
 
 /**
  * Update aus den GitHub-Releases (Tags hovermusic-vX.Y.Z, ohne Entwürfe und Vorabversionen).
@@ -63,6 +63,23 @@ object Updater {
         return best
     }
 
+    /** Was in allen Versionen nach [current] neu ist, ohne Markdown-Zeichen. */
+    fun notesSince(json: String, current: String): String {
+        val list = JSONArray(json)
+        val out = StringBuilder()
+        for (i in 0 until list.length()) {
+            val r = list.getJSONObject(i)
+            val tag = r.optString("tag_name")
+            if (r.optBoolean("draft") || r.optBoolean("prerelease") || !tag.startsWith("hovermusic-v")) continue
+            val version = tag.removePrefix("hovermusic-v")
+            if (!isNewer(version, current)) continue
+            val body = r.optString("body").lines().filterNot { it.startsWith("**Full Changelog") || it.isBlank() }
+                .joinToString("\n") { it.replace("**", "").replace("`", "") }
+            out.append(version).append('\n').append(body).append("\n\n")
+        }
+        return out.toString().trim().take(1500)
+    }
+
     private fun open(url: String) = (URL(url).openConnection() as HttpURLConnection).apply {
         connectTimeout = 15000
         readTimeout = 30000
@@ -87,8 +104,9 @@ object Updater {
         val current = installed(ctx)
         status.value = "Suche nach Updates …"
         run("Suche") {
-            val r = newest(open(API).inputStream.use { it.readBytes().toString(Charsets.UTF_8) })
-            available.value = r?.takeIf { isNewer(it.version, current) }
+            val json = open(API).inputStream.use { it.readBytes().toString(Charsets.UTF_8) }
+            val r = newest(json)
+            available.value = r?.takeIf { isNewer(it.version, current) }?.copy(notes = notesSince(json, current))
             status.value = available.value?.let { "Version ${it.version} ist verfügbar." } ?: "Du hast die neueste Version."
         }
     }

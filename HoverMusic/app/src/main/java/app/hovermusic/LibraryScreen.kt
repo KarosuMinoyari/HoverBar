@@ -191,7 +191,7 @@ fun LibraryScreen(vm: MusicViewModel, onOpenNow: () -> Unit, onSettings: () -> U
 }
 
 @Composable
-private fun SearchResults(hits: List<Found>, searching: Boolean, onPick: (Found) -> Unit) {
+internal fun SearchResults(hits: List<Found>, searching: Boolean, onPick: (Found) -> Unit) {
     if (hits.isEmpty()) {
         Text(if (searching) "Suche …" else "Nichts gefunden.", Modifier.padding(20.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
         return

@@ -223,7 +223,7 @@ struct AppFolder {
     int shown = 0;  // davon direkt in der Ordnerkarte sichtbar
 };
 
-enum class View { Folders, Folder, Search, Settings, Music, MusicList, SongEdit, MusicSettings, AllApps, Calendar, Storage, Chat, NowPlaying, Timer, Suggest, Todo };
+enum class View { Folders, Folder, Search, Settings, Music, MusicList, SongEdit, MusicSettings, AllApps, Calendar, Storage, Chat, NowPlaying, Timer, Suggest, Todo, Tutorial };
 enum class HT {
     None, Card, Slot, Mini, Cell, Back, Menu, Gear,
     // Einstellungen
@@ -234,7 +234,7 @@ enum class HT {
     // Musik
     MusicJob, MusicEmpty, MCard, MTile, MMore, MPlayAll, MRow, PlHead, PlUp, PlDown, PlDelete, PlDrop, PlSongRow,
     AllSongRow, AllSongAdd, AllSongEdit, MusicOpen, MProgress, EditCover, EditBtn, EditInfo, CoverPick, EditLabel, EditField,
-    MAlbum, VolIcon, MusicManage, MSize, MSort, GrabKeyBtn, MReload, TimerWheel, TimerShow, TimerBtn, CtlKeyBtn, ImportBtn, SuggestRow, SuggestAdd, SuggestInfo, SuggestReload, SuggestCovers, TodoRow, TodoDel, CalSync
+    MAlbum, VolIcon, MusicManage, MSize, MSort, GrabKeyBtn, MReload, TimerWheel, TimerShow, TimerBtn, CtlKeyBtn, ImportBtn, SuggestRow, SuggestAdd, SuggestInfo, SuggestReload, SuggestCovers, TodoRow, TodoDel, CalSync, TutorialOpen, TutCard, TutBtn, TutSetting, InfoLink, InfoText
 };
 struct Hit {
     RECT rc;
@@ -528,6 +528,11 @@ struct State {
     int ctlCapture = -1;                         // wartet auf die neue Taste für diese Funktion
     bool calendarOn = true;                      // Erweiterung "Kalender"
     unsigned plugOpen = 0;                       // aufgeklappte Karten im Reiter "Erweiterungen" (Bit je Karte)
+    ULONGLONG updateCheckAt = 0;                 // letzte automatische Update-Suche
+    std::wstring updateOffered;                  // diese Version wurde schon angeboten
+    bool updateAccepted = false;
+    bool tutorialSeen = true, tutorialInSettings = false;  // Knopf dafür: Startseite oder eigener Reiter in den Einstellungen
+    int tutorialPage = 0;
     bool suggestCovers = true;                   // Albumbilder bei den Hörproben
     std::wstring icalUrl;                        // geheime iCal-Adresse (Google Kalender), nur lokal gespeichert
     std::vector<CalEntry> icalEvents;
@@ -684,6 +689,8 @@ static void InitIni() {
     g.spacing = std::max(80, std::min(160, (int)GetPrivateProfileIntW(L"Einstellungen", L"Zeilenabstand", 100, g.ini.c_str())));
     g.suggestOn = GetPrivateProfileIntW(L"Erweiterungen", L"Vorschlaege", 0, g.ini.c_str()) != 0;
     g.suggestCovers = GetPrivateProfileIntW(L"Erweiterungen", L"VorschlagCover", 1, g.ini.c_str()) != 0;
+    g.tutorialSeen = GetPrivateProfileIntW(L"Einstellungen", L"TutorialGesehen", 0, g.ini.c_str()) != 0;
+    g.tutorialInSettings = GetPrivateProfileIntW(L"Einstellungen", L"TutorialReiter", 0, g.ini.c_str()) != 0;
     g.todoOn = GetPrivateProfileIntW(L"Erweiterungen", L"Todo", 0, g.ini.c_str()) != 0;
     g.icalUrl = IniGet(L"Erweiterungen", L"KalenderICal");
     {
@@ -1562,6 +1569,9 @@ static HBITMAP MakeLogoBitmap(int px);
 static std::wstring HeaderTitle();
 static void CalendarSyncClick();
 static void Message(const std::wstring& text);
+static bool OfferUpdate();
+static void DrawTutorialPage(HDC dc, const RECT& r);
+static void SetTutorialTab(bool inSettings);
 static std::vector<int> NavPages();
 static int ContentBottom();
 static SIZE_T RunningRam(int idx);
@@ -2464,9 +2474,29 @@ static void Layout() {
         }
         g.contentH = y - y0;
     } else if (g.view == View::Settings) {
-        int tw = (W - 2 * pad) / 4;
-        for (int k = 0; k < 4; k++) g.hits.push_back({{pad + k * tw, S(58), k == 3 ? W - pad : pad + (k + 1) * tw, S(94)}, HT::Tab, k});
-        if (g.setTab == 0) LayoutDesign(W, pad, y0);
+        std::vector<int> tabs = {0, 1, 2, 3};
+        if (g.tutorialInSettings) tabs.insert(tabs.begin(), 4);
+        else if (g.setTab == 4) g.setTab = 0;
+        int n = (int)tabs.size(), iw = S(36), tw = (W - 2 * pad - iw) / n;
+        for (int k = 0; k < n; k++) g.hits.push_back({{pad + k * tw, S(58), k == n - 1 ? W - pad - iw : pad + (k + 1) * tw, S(94)}, HT::Tab, tabs[k]});
+        g.hits.push_back({{W - pad - iw, S(58), W - pad, S(94)}, HT::Tab, 5});  // Info
+        if (g.setTab == 5) {
+            int cw = W - 2 * pad, y = y0;
+            g.hits.push_back({{pad, y, pad + cw, y + S(96)}, HT::InfoText, 0});
+            y += S(108);
+            g.hits.push_back({{pad, y, pad + cw, y + S(44)}, HT::InfoLink, 0});  // GitHub
+            y += S(54);
+            if (HB_COFFEE[0]) {
+                g.hits.push_back({{pad, y, pad + cw, y + S(44)}, HT::InfoLink, 1});
+                y += S(54);
+            }
+            g.contentH = y - y0;
+        } else if (g.setTab == 4) {
+            int cw = W - 2 * pad;
+            g.hits.push_back({{pad, y0, pad + cw, y0 + S(44)}, HT::TutSetting, 0});             // starten
+            g.hits.push_back({{pad, y0 + S(54), pad + cw, y0 + S(98)}, HT::TutSetting, 1});    // Knopf zurück auf die Startseite
+            g.contentH = S(98);
+        } else if (g.setTab == 0) LayoutDesign(W, pad, y0);
         else if (g.setTab == 2) LayoutFunctions(W, pad, y0);
         else if (g.setTab == 3) LayoutSuggested(W, pad, y0);
         else LayoutFolders(W, H, pad);
@@ -2480,6 +2510,15 @@ static void Layout() {
         LayoutMusicList(W, pad, y0);
     } else if (g.view == View::SongEdit) {
         LayoutSongEdit(W, pad, y0);
+    } else if (g.view == View::Tutorial) {
+        int cw = W - 2 * pad, y = y0, bh = S(40), half = (cw - S(10)) / 2, cardH = S(360);
+        g.hits.push_back({{pad, y, pad + cw, y + cardH}, HT::TutCard, 0});
+        y += cardH + S(14);
+        if (g.tutorialPage > 0) g.hits.push_back({{pad, y, pad + half, y + bh}, HT::TutBtn, 0});              // zurück
+        g.hits.push_back({{pad + cw - half, y, pad + cw, y + bh}, HT::TutBtn, 1});                            // weiter / fertig
+        y += bh + S(10);
+        g.hits.push_back({{pad, y, pad + cw, y + bh}, HT::TutBtn, g.tutorialPage == 5 ? 3 : 2});              // überspringen / Knopf verschieben
+        g.contentH = y + bh - y0;
     } else if (g.view == View::Todo) {
         if (!g.todoLoaded) LoadTodos();
         int cw = W - 2 * pad, y = y0, rh = RowH(46);
@@ -2491,9 +2530,10 @@ static void Layout() {
         g.contentH = y - y0;
     } else if (g.view == View::Suggest) {
         int cw = W - 2 * pad, y = y0, rh = RowH(58);
-        if (!g.showSearch) {
-            g.hits.push_back({{W - pad - S(110), S(60), W - pad, S(92)}, HT::SuggestReload, 0});
-            g.hits.push_back({{W - pad - S(232), S(60), W - pad - S(118), S(92)}, HT::SuggestCovers, 0});
+        if (!g.showSearch) {  // oben im Kopf sitzt das Suchfeld, die Knöpfe direkt darunter
+            g.hits.push_back({{W - pad - S(116), y, W - pad, y + S(32)}, HT::SuggestReload, 0});
+            g.hits.push_back({{W - pad - S(238), y, W - pad - S(124), y + S(32)}, HT::SuggestCovers, 0});
+            y += S(42);
         }
         if (SuggestBusy() || SuggestList().empty()) g.hits.push_back({{pad, y, pad + cw, y + S(60)}, HT::SuggestInfo, 0});
         else
@@ -2643,6 +2683,8 @@ static void Layout() {
         int gx = pad + S(36) + ext.cx + S(6);
         if (g.view == View::Folders) g.hits.push_back({{pad + S(30), S(15), gx - S(2), S(49)}, HT::TitleBtn, 0});  // "Apps" -> alle Apps mit Größe
         g.hits.push_back({{gx, S(15), gx + S(34), S(49)}, HT::Gear, 0});
+        if (!g.tutorialInSettings && (g.view == View::Folders || (!g.appsOn && g.view == View::Music)))
+            g.hits.push_back({{gx + S(36), S(15), gx + S(70), S(49)}, HT::TutorialOpen, 0});
     }
     // rechts, von links nach rechts: (Musik verwalten) | Bluetooth | WLAN | Akku | ···
     {
@@ -2678,6 +2720,7 @@ static std::wstring HeaderTitle() {
     if (g.view == View::Chat) return L"Claude";
     if (g.view == View::Timer) return L"Timer";
     if (g.view == View::Todo) return L"To-do";
+    if (g.view == View::Tutorial) return L"Tutorial";
     if (g.view == View::Suggest) return g.showSearch ? L"Suchtreffer" : L"Vorschläge";
     if (g.view == View::NowPlaying) return L"Läuft gerade";
     return L"Apps";
@@ -2712,7 +2755,7 @@ static bool IsHeaderHit(HT t) { return t == HT::Back || t == HT::NavBar || t == 
                                        t == HT::Logo || t == HT::Wifi || t == HT::Battery || t == HT::BarVol || t == HT::VolIcon || t == HT::TitleBtn || t == HT::SortBtn || t == HT::CalNav || t == HT::StorageRefresh || t == HT::ChatNew ||
                                      t == HT::MediaPrev || t == HT::MediaPlay || t == HT::MediaNext || t == HT::MediaPhone ||
                                      t == HT::MusicOpen || t == HT::PlayMode || t == HT::MProgress || t == HT::MusicManage || t == HT::MSize ||
-                                     t == HT::NpCover || t == HT::NpLyrics || t == HT::BarCover || t == HT::LibTab || t == HT::FavBtn; }
+                                     t == HT::NpCover || t == HT::NpLyrics || t == HT::BarCover || t == HT::LibTab || t == HT::FavBtn || t == HT::TutorialOpen; }
 static int ContentBottom() { return !HasMusicBar() ? g.h : g.h - S(18) - S(kBarH) - S(8); }
 static bool OrdnerPage() { return (g.view == View::Settings && g.setTab == 1) || g.view == View::MusicSettings; }  // zweigeteilte Seiten (Ordner, Musik)
 
@@ -3111,6 +3154,28 @@ static void DrawTimerHit(HDC dc, const Hit& h, bool hot) {
     Text(dc, label, {h.rc.left + S(10), h.rc.top, h.rc.right - S(10), h.rc.bottom}, main ? g.fHead : g.fText, main ? RGB(255, 255, 255) : cText,
          DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 }
+// Tutorial: eine Seite = Symbol, Überschrift, ein paar Sätze, Fortschrittspunkte
+static void DrawTutorialPage(HDC dc, const RECT& r) {
+    static const wchar_t* icons[] = {L"\uE7C2", L"\uE80F", L"\uEC4F", L"\uE8EA", L"\uE734", L"\uE713"};
+    static const wchar_t* titles[] = {L"Öffnen und schließen", L"Deine Apps", L"Musik", L"Musik aufs Handy", L"Erweiterungen", L"Anpassen"};
+    int page = std::max(0, std::min(5, g.tutorialPage));
+    std::wstring key = HotkeyName(g.hotVk, g.hotMods);
+    std::wstring texts[] = {
+        L"Fahr mit der Maus an den rechten Bildschirmrand oder drück " + key + L".\n\nZu geht die Leiste, wenn die Maus in die Killzone links kommt, mit Esc oder derselben Taste.",
+        L"Auf der Startseite liegen deine Apps in Ordnern.\n\nEinfach lostippen, um zu suchen. Rechtsklick auf eine App zeigt mehr Möglichkeiten.",
+        L"Songtitel oben in der Bibliothek eingeben und Enter: Treffer anklicken lädt den Song. " + HotkeyName(g.grabVk, g.grabMods) +
+            L" lädt das Video, das im Browser offen ist.\n\n" + key + L" halten und Pos1, Bild auf/ab oder +/− steuert die Wiedergabe.",
+        L"Erweiterungen → Musik-Sync legt deine Musik in einen Cloud-Ordner.\n\nDie App HoverMusic spielt sie auf dem Handy; den QR-Code zum Einrichten zeigt HoverBar.",
+        L"Zahnrad → Erweiterungen: Kalender, To-do-Liste, Timer, Songvorschläge, Claude und mehr.\n\nKarte anklicken, um sie aufzuklappen.",
+        L"Unter Design: Aussehen, Schrift, Breite und Killzone. Unter Funktionen: Tasten und was HoverBar anzeigt.\n\nIn den Einstellungen lassen sich die Symbole links per Ziehen sortieren."};
+    FillRound(dc, r, S(22), cCard);
+    int cx = (r.left + r.right) / 2;
+    FillCircle(dc, cx, r.top + S(60), S(34), cAccent);
+    Text(dc, icons[page], {cx - S(34), r.top + S(26), cx + S(34), r.top + S(94)}, g.fGlyphL, RGB(255, 255, 255), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    Text(dc, titles[page], {r.left + S(16), r.top + S(108), r.right - S(16), r.top + S(144)}, g.fBarTitle, cText, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    Text(dc, texts[page], {r.left + S(26), r.top + S(158), r.right - S(26), r.bottom - S(30)}, g.fText, RGB(210, 210, 220), DT_CENTER | DT_WORDBREAK);
+    for (int i = 0; i < 6; i++) FillCircle(dc, cx - S(40) + i * S(16), r.bottom - S(16), S(4), i == page ? cAccent : RGB(90, 90, 104));
+}
 static void DrawHit(HDC dc, const Hit& h, bool hot, int cardHot) {
     switch (h.type) {
     // ---------- Hauptansicht
@@ -3268,7 +3333,7 @@ static void DrawHit(HDC dc, const Hit& h, bool hot, int cardHot) {
         RECT r = {h.rc.left + S(2), h.rc.top + S(2), h.rc.right - S(2), h.rc.bottom - S(2)};
         if (sel) FillRound(dc, r, S(10), cHover);
         else if (hot) FillRound(dc, r, S(10), cCardHot);
-        Text(dc, h.idx == 0 ? L"Design" : h.idx == 1 ? L"Ordner" : h.idx == 2 ? L"Funktionen" : L"Erweiterungen", h.rc, sel ? g.fHead : g.fText, sel ? cText : cDim,
+        Text(dc, h.idx == 5 ? L"ⓘ" : h.idx == 4 ? L"Tutorial" : h.idx == 0 ? L"Design" : h.idx == 1 ? L"Ordner" : h.idx == 2 ? L"Funktionen" : L"Erweiterungen", h.rc, sel ? g.fHead : g.fText, sel ? cText : cDim,
              DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         break;
     }
@@ -3280,6 +3345,31 @@ static void DrawHit(HDC dc, const Hit& h, bool hot, int cardHot) {
         FillRound(dc, h.rc, S(10), hot ? cHover : cSearch);
         Text(dc, L"Datei wählen …", h.rc, g.fSmall, cText, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         break;
+    case HT::TutorialOpen:
+        if (hot) FillRound(dc, h.rc, S(10), cHover);
+        Text(dc, L"\uE897", h.rc, g.fGlyph, cText, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        break;
+    case HT::TutSetting:
+        FillRound(dc, h.rc, S(14), hot ? cHover : cCard);
+        Text(dc, h.idx == 0 ? L"Tutorial starten" : L"Knopf zurück auf die Startseite", h.rc, g.fText, cText, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        break;
+    case HT::TutCard: DrawTutorialPage(dc, h.rc); break;
+    case HT::InfoText:
+        FillRound(dc, h.rc, S(18), cCard);
+        Text(dc, L"HoverBar " + std::wstring(HB_VERSION), {h.rc.left, h.rc.top + S(16), h.rc.right, h.rc.top + S(46)}, g.fBarTitle, cText, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        Text(dc, L"von KarosuMinoyari · Quellcode und Downloads auf GitHub", {h.rc.left + S(12), h.rc.top + S(52), h.rc.right - S(12), h.rc.top + S(76)}, g.fSmall, cDim, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        break;
+    case HT::InfoLink:
+        FillRound(dc, h.rc, S(22), h.idx == 1 ? (hot ? RGB(255, 225, 90) : RGB(255, 205, 40)) : hot ? cHover : cCard);
+        Text(dc, h.idx == 0 ? L"GitHub öffnen" : L"Buy me a coffee", h.rc, g.fHead, h.idx == 1 ? RGB(30, 30, 30) : cText, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        break;
+    case HT::TutBtn: {
+        bool main = h.idx == 1;
+        FillRound(dc, h.rc, S(20), main ? (hot ? RGB(120, 180, 255) : cAccent) : hot ? cHover : cSearch);
+        Text(dc, h.idx == 0 ? L"Zurück" : h.idx == 1 ? (g.tutorialPage == 5 ? L"Fertig" : L"Weiter") : h.idx == 2 ? L"Überspringen" : L"Tutorial-Knopf in die Einstellungen verschieben",
+             h.rc, main ? g.fHead : g.fSmall, main ? RGB(255, 255, 255) : cText, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        break;
+    }
     case HT::SuggestCovers:
         FillRound(dc, h.rc, S(16), g.suggestCovers ? cAccent : hot ? cCardHot : cCard);
         Text(dc, g.suggestCovers ? L"Cover: an" : L"Cover: aus", h.rc, g.fSmall, cText, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
@@ -3300,7 +3390,7 @@ static void DrawHit(HDC dc, const Hit& h, bool hot, int cardHot) {
     }
     case HT::SuggestReload:
         FillRound(dc, h.rc, S(16), hot ? cCardHot : cCard);
-        Text(dc, L"Neu laden", h.rc, g.fSmall, cText, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        Text(dc, L"Neue Songs", h.rc, g.fSmall, cText, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         break;
     case HT::SuggestInfo:
         Text(dc, g.view == View::Todo ? L"Noch keine Aufgaben." : SuggestBusy() ? L"Suche …" : g.showSearch ? L"Nichts gefunden." : L"Nichts gefunden. Dafür braucht es Songs mit Künstler und Internet.", h.rc, g.fSmall, cDim, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
@@ -4748,12 +4838,12 @@ static void DrawScene(HDC dc, int W, int H) {
             Text(dc, st.empty() ? L"claude.ai – angemeldet bleibst du dauerhaft" : st, {pad + S(4), S(58), W - pad - S(140), S(94)}, g.fSmall, cDim,
                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
             FillRound(dc, g.chatRect, S(12), cSearch);  // sichtbar, bis das Chat-Fenster darüber liegt
+        } else if (g.view == View::Tutorial) {
+            Text(dc, L"Schritt " + std::to_wstring(g.tutorialPage + 1) + L" von 6", {pad + S(4), S(58), W - pad, S(94)}, g.fSmall, cDim, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
         } else if (g.view == View::Todo) {
             DrawField(dc, {pad, S(58), W - pad, S(94)}, g.query, L"Neue Aufgabe, dann Enter", true);
-        } else if (g.view == View::Suggest && g.showSearch) {
-            DrawField(dc, {pad, S(58), W - pad, S(94)}, g.query, L"Song auf YouTube suchen, dann Enter", true);
         } else if (g.view == View::Suggest) {
-            Text(dc, L"Nach deinen meistgehörten Künstlern", {pad + S(4), S(58), W - pad - S(240), S(94)}, g.fSmall, cDim, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+            DrawField(dc, {pad, S(58), W - pad, S(94)}, g.query, L"Song auf YouTube suchen, dann Enter", true);
         } else if (g.view == View::Timer) {
             Text(dc, g.timerRinging ? L"Klingelt" : g.timerEnd ? L"Läuft" : g.timerLeft ? L"Angehalten" : L"Dauer wählen: ziehen oder Mausrad",
                  {pad + S(4), S(58), W - pad, S(94)}, g.fSmall, cDim, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
@@ -4776,7 +4866,7 @@ static void DrawScene(HDC dc, int W, int H) {
     }
 
     int top = ContentTop();
-    if (!g.loaded && g.view != View::Settings && !MusicView() && g.view != View::Timer && g.view != View::Suggest && g.view != View::Todo) {
+    if (!g.loaded && g.view != View::Settings && !MusicView() && g.view != View::Timer && g.view != View::Suggest && g.view != View::Todo && g.view != View::Tutorial) {
         Text(dc, L"Apps werden geladen …", {0, top + S(40), W, top + S(80)}, g.fText, cDim, DT_CENTER | DT_SINGLELINE);
     } else if (g.view == View::Search && g.results.empty() && g.namingFor < 0) {
         Text(dc, L"Keine Treffer", {0, top + S(40), W, top + S(80)}, g.fText, cDim, DT_CENTER | DT_SINGLELINE);
@@ -5807,6 +5897,12 @@ static void OpenBar(POINT pt) {
         Media_SetSpotifyOnly(true);
         Media_Open(g.hwnd, S(kBarArt));
     }
+    // beim Öffnen nach Updates sehen, höchstens einmal pro Stunde (GitHub begrenzt anonyme Anfragen)
+    if (!g.updateCheckAt || GetTickCount64() - g.updateCheckAt > 3600000) {
+        g.updateCheckAt = GetTickCount64();
+        int st = Update_Status().state;
+        if (st != UPD_DOWNLOADING && st != UPD_VERIFYING && st != UPD_READY) Update_Check(g.hwnd);
+    }
     Music_Init(g.hwnd);
     LoadFavRecent();
     Music_ImportEdits();
@@ -5846,6 +5942,12 @@ static void OpenBar(POINT pt) {
         g.scroll = r.scroll;
         g.scrollR = r.scrollR;
         Log(L"Wiederöffnen binnen 10 s: letzte Ansicht bleibt");
+    }
+    if (!g.tutorialSeen && !g.timerRinging) {  // beim ersten Öffnen einmal durch die wichtigsten Funktionen führen
+        g.tutorialSeen = true;
+        IniSet(L"Einstellungen", L"TutorialGesehen", L"1");
+        g.view = View::Tutorial;
+        g.tutorialPage = 0;
     }
     if (g.timerRinging) g.view = View::Timer;
     else {
@@ -6394,6 +6496,36 @@ static void CalendarSyncClick() {
     IniSet(L"Erweiterungen", L"KalenderICal", link.c_str());
     StartIcal();
     Refresh();
+}
+// Update gefunden: einmal je Version anbieten, mit den Neuerungen; true, wenn gerade ein Fenster gezeigt wurde
+static bool OfferUpdate() {
+    UpdateStatus us = Update_Status();
+    bool ready = us.state == UPD_READY && g.updateAccepted;
+    if (!ready && (us.state != UPD_AVAILABLE || us.latest == g.updateOffered)) return false;
+    g.menuOpen = true;
+    int answer;
+    if (ready) {
+        g.updateAccepted = false;
+        answer = hb::Dialog(g.hwnd, L"Update bereit", us.latest + L" ist installiert. Jetzt neu starten? Die Musik stoppt dabei.", {{L"Neu starten", IDYES}, {L"Später", IDNO}}, 1, IDNO);
+    } else {
+        g.updateOffered = us.latest;
+        answer = hb::Dialog(g.hwnd, L"Neue Version " + us.latest, us.notes.empty() ? std::wstring(L"Es gibt ein Update.") : us.notes,
+                            {{L"Installieren", IDOK}, {L"Später", IDCANCEL}}, 1, IDCANCEL);
+    }
+    g.menuOpen = false;
+    SetForegroundWindow(g.hwnd);
+    if (answer == IDOK) {
+        g.updateAccepted = true;
+        Update_Install(g.hwnd);
+    } else if (answer == IDYES) {
+        Update_Restart();
+        DestroyWindow(g.hwnd);
+    }
+    return true;
+}
+static void SetTutorialTab(bool inSettings) {
+    g.tutorialInSettings = inSettings;
+    IniSet(L"Einstellungen", L"TutorialReiter", inSettings ? L"1" : L"0");
 }
 static void EventMenu(int i) {
     if (i < 0 || i >= (int)g.events.size()) return;
@@ -7842,6 +7974,12 @@ static void Activate(int hitIdx, bool right) {
             }
             return;
         }
+        if (h.type == HT::TutorialOpen) {
+            HMENU m = CreatePopupMenu();
+            AppendMenuW(m, MF_STRING, 1, L"In die Einstellungen verschieben");
+            if (TrackMenu(m) == 1) { SetTutorialTab(true); Refresh(); }
+            return;
+        }
         if (h.type == HT::LinkChip) { LinkMenu(h.idx); return; }
         if (h.type == HT::CalEvent) { EventMenu(h.idx); return; }
         if (h.type == HT::Slot || h.type == HT::Cell || h.type == HT::GameRow || h.type == HT::AppSizeRow || h.type == HT::SetAppRow || h.type == HT::AllAppRow ||
@@ -7856,6 +7994,22 @@ static void Activate(int hitIdx, bool right) {
     case HT::ImportBtn:
         ImportSpotify();
         Refresh();
+        break;
+    case HT::InfoLink:
+        OpenLink(h.idx == 0 ? HB_GITHUB : HB_COFFEE);
+        break;
+    case HT::TutorialOpen:
+        g.tutorialPage = 0;
+        ShowView(View::Tutorial);
+        break;
+    case HT::TutSetting:
+        if (h.idx == 0) { g.tutorialPage = 0; ShowView(View::Tutorial); }
+        else { SetTutorialTab(false); g.setTab = 0; Refresh(); }
+        break;
+    case HT::TutBtn:
+        if (h.idx == 3) { SetTutorialTab(true); Message(L"Du findest das Tutorial jetzt in den Einstellungen im Reiter links neben Design."); ShowView(View::Folders); }
+        else if (h.idx == 2 || (h.idx == 1 && g.tutorialPage == 5)) ShowView(View::Folders);
+        else { g.tutorialPage = std::max(0, std::min(5, g.tutorialPage + (h.idx == 1 ? 1 : -1))); Refresh(); }
         break;
     case HT::SuggestCovers:
         g.suggestCovers = !g.suggestCovers;
@@ -8712,7 +8866,7 @@ static void QueueLink(const std::wstring& url) {
 static bool Focusable(HT t) {
     switch (t) {
     case HT::None: case HT::SetCard: case HT::SetSection: case HT::SetRowLabel: case HT::Pane: case HT::PaneTitle: case HT::MusicEmpty:
-    case HT::EditInfo: case HT::EditLabel: case HT::NavBar: case HT::MusicBar: case HT::RecentCard: case HT::CalHead:
+    case HT::EditInfo: case HT::EditLabel: case HT::InfoText: case HT::NavBar: case HT::MusicBar: case HT::RecentCard: case HT::CalHead:
     case HT::CalInfo: case HT::GameHead: case HT::SetHiddenHead: case HT::SetDrop: case HT::PlDrop: case HT::TimerWheel: case HT::TimerShow: case HT::SuggestInfo: return false;
     default: return true;
     }
@@ -8778,7 +8932,7 @@ static void OnKeyDown(WPARAM vk) {
         else if (g.view == View::Music && g.query.empty() && g.libTab != 0) { g.libTab = 0; g.scroll = 0; Refresh(); }
         else if (!g.query.empty()) { g.query.clear(); OnQueryChanged(); }
         else if (g.view == View::MusicList || g.view == View::MusicSettings) ShowView(View::Music);
-        else if (g.view == View::Folder || g.view == View::Settings || g.view == View::Music || g.view == View::AllApps || g.view == View::Calendar || g.view == View::Storage || g.view == View::Chat || g.view == View::Timer || g.view == View::Suggest || g.view == View::Todo) {
+        else if (g.view == View::Folder || g.view == View::Settings || g.view == View::Music || g.view == View::AllApps || g.view == View::Calendar || g.view == View::Storage || g.view == View::Chat || g.view == View::Timer || g.view == View::Suggest || g.view == View::Todo || g.view == View::Tutorial) {
             if (g.view == View::Suggest && g.showSearch) { ShowView(View::Music); return; }
             if (!g.appsOn && g.view == View::Music) CloseBar(L"Esc");
             else ShowView(View::Folders);
@@ -8801,7 +8955,7 @@ static void OnKeyDown(WPARAM vk) {
                 g.query.clear();
                 Refresh();
             }
-        } else if (g.view == View::Music || (g.view == View::Suggest && g.showSearch)) {
+        } else if (g.view == View::Music || g.view == View::Suggest) {
             std::wstring u = g.query;
             if (!u.empty()) {
                 if (!AsLink(u).empty()) g.query.clear();  // ein Suchbegriff bleibt zum Ändern stehen
@@ -8850,7 +9004,7 @@ static void OnKeyDown(WPARAM vk) {
 
 static bool TypingAllowed() {
     // Design-Seite hat kein Textfeld
-    return !(g.view == View::Settings && g.setTab != 1) && g.view != View::NowPlaying && g.view != View::Timer && (g.view != View::Suggest || g.showSearch);
+    return !(g.view == View::Settings && g.setTab != 1) && g.view != View::NowPlaying && g.view != View::Timer && g.view != View::Tutorial;
 }
 
 // Lautstärkeregler aus-/einklappen je nachdem, ob die Maus darauf ist (einklappen mit kurzer Verzögerung)
@@ -8907,6 +9061,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         } else if (wp == T_WATCH) {
             // Bleibt offen, bis die Maus an den linken Rand geht (oder Esc / App-Start / Alt+Tab)
             if (!g.open || g.closing || g.menuOpen || g.animating || g.dragCand || g.sliderDrag >= 0) return 0;
+            if (OfferUpdate()) return 0;
             POINT pt;
             GetCursorPos(&pt);
             int zone = g.monLeft + g.monW * g.killZone / 100;
@@ -9789,7 +9944,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_LBUTTONDOWN: {
         POINT pt = {GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
         g.pressed = HitTest(pt);
-        if (g.pressed >= 0 && g.hits[g.pressed].type == HT::Nav) {  // klicken = öffnen, ziehen = umsortieren
+        if (g.view == View::Settings && g.pressed >= 0 && g.hits[g.pressed].type == HT::Nav) {  // nur in den Einstellungen: ziehen = umsortieren
             g.navDrag = g.hits[g.pressed].idx;
             g.navDragY = pt.y;
             g.navMoved = false;

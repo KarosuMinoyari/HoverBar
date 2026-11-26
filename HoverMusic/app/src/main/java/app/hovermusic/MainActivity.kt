@@ -37,6 +37,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.material3.Button
+import androidx.compose.material3.AlertDialog
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.LocalTextStyle
@@ -98,6 +100,7 @@ private fun App(vm: MusicViewModel) {
     val showNow by vm.showNow.collectAsState()
     var showSettings by remember { mutableStateOf(false) }
     var showSuggest by remember { mutableStateOf(false) }
+    UpdatePopup()
     val look = vm.look.value
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
@@ -127,6 +130,40 @@ private fun App(vm: MusicViewModel) {
         if (showSettings) SettingsScreen(vm, onClose = { showSettings = false }, onPickFolder = { picker.launch(null) })
     }
     BackHandler(enabled = showNow && !showSettings) { vm.showNow.value = false }
+}
+
+/** Bei jedem Öffnen nach Updates sehen; gibt es eines, zeigt ein Fenster, was neu ist. */
+@Composable
+private fun UpdatePopup() {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val update by Updater.available.collectAsState()
+    val status by Updater.status.collectAsState()
+    var later by remember { mutableStateOf(false) }
+    val owner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    DisposableEffect(owner) {
+        val obs = LifecycleEventObserver { _, e ->
+            if (e == Lifecycle.Event.ON_START) {
+                later = false
+                Updater.check(ctx)
+            }
+        }
+        owner.lifecycle.addObserver(obs)
+        onDispose { owner.lifecycle.removeObserver(obs) }
+    }
+    val u = update ?: return
+    if (later) return
+    AlertDialog(
+        onDismissRequest = { later = true },
+        title = { Text("Neue Version ${u.version}") },
+        text = {
+            Column(Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState())) {
+                Text(u.notes.ifEmpty { "Es gibt ein Update." }, fontSize = 14.sp)
+                status?.let { Text(it, fontSize = 12.sp, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(top = 10.dp)) }
+            }
+        },
+        confirmButton = { TextButton(onClick = { Updater.install(ctx, u) }) { Text("Installieren") } },
+        dismissButton = { TextButton(onClick = { later = true }) { Text("Später") } },
+    )
 }
 
 /** Einrichtung: QR-Code aus HoverBar scannen, dann führt die App durch Cloud-App und Ordnerwahl. */

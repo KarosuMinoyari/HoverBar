@@ -130,6 +130,9 @@ object AppIcon {
     }
 }
 
+/** "Buy me a coffee"-Seite; leer = kein Knopf. */
+private const val COFFEE = ""
+
 @Composable
 fun SettingsScreen(vm: MusicViewModel, onClose: () -> Unit, onPickFolder: () -> Unit) {
     val ctx = LocalContext.current
@@ -207,6 +210,11 @@ fun SettingsScreen(vm: MusicViewModel, onClose: () -> Unit, onPickFolder: () -> 
         // ein Knopf für beides: neue HoverMusic-Version suchen und yt-dlp aktualisieren
         if (u == null) TextButton(onClick = { Updater.check(ctx); Downloader.prepare(ctx, update = true) }) { Text("Nach Updates suchen") }
         else TextButton(onClick = { Updater.install(ctx, u) }) { Text("Version ${u.version} installieren") }
+
+        Head("Info")
+        val web = androidx.compose.ui.platform.LocalUriHandler.current
+        TextButton(onClick = { web.openUri("https://github.com/KarosuMinoyari/HoverBar") }) { Text("GitHub öffnen") }
+        if (COFFEE.isNotEmpty()) TextButton(onClick = { web.openUri(COFFEE) }) { Text("Buy me a coffee") }
 
         Head("Musik")
         TextButton(onClick = onPickFolder) { Text("Musikordner wählen") }

@@ -98,21 +98,25 @@ object Suggestions {
         return c.inputStream.use { it.readBytes().toString(Charsets.UTF_8) }
     }
 
+    private val shown = HashSet<String>()  // in dieser Sitzung schon vorgeschlagen
+
     fun load(artists: List<String>, owned: Set<String>) {
         if (busy.value) return
         busy.value = true
         scope.launch {
-            val seen = owned.toHashSet()
+            val seen = HashSet(owned + shown)  // beim Neuladen andere Songs
             val out = ArrayList<Idea>()
             fun add(artistId: Long, take: Int) {
-                tracks(get("https://api.deezer.com/artist/$artistId/top?limit=8"))
+                tracks(get("https://api.deezer.com/artist/$artistId/top?limit=30")).shuffled()
                     .filter { seen.add(it.title.lowercase()) }.take(take).forEach { out.add(it) }
             }
-            for (name in artists) runCatching {
+            for (name in artists.shuffled().take(5)) runCatching {
                 val id = ids(get("https://api.deezer.com/search/artist?limit=1&q=" + URLEncoder.encode(name, "UTF-8"))).firstOrNull() ?: return@runCatching
-                ids(get("https://api.deezer.com/artist/$id/related?limit=3")).forEach { add(it, 2) }
+                ids(get("https://api.deezer.com/artist/$id/related?limit=20")).shuffled().take(3).forEach { add(it, 2) }
                 add(id, 1)
             }
+            out.forEach { shown.add(it.title.lowercase()) }
+            if (out.isEmpty()) shown.clear()  // alles durch: beim nächsten Mal von vorn
             list.value = out
             busy.value = false
         }
@@ -142,7 +146,7 @@ fun SuggestScreen(vm: MusicViewModel, onClose: () -> Unit) {
 
     fun reload() {
         val songs = library?.songs.orEmpty()
-        Suggestions.load(Suggestions.topArtists(songs, { vm.plays(it) }), songs.map { it.title.lowercase() }.toSet())
+        Suggestions.load(Suggestions.topArtists(songs, { vm.plays(it) }, 12), songs.map { it.title.lowercase() }.toSet())
     }
     LaunchedEffect(library != null) { if (ideas == null && library != null) reload() }
 
@@ -164,11 +168,34 @@ fun SuggestScreen(vm: MusicViewModel, onClose: () -> Unit) {
     }
 
     val look = vm.look.value
+    var query by remember { mutableStateOf("") }
+    val results by Downloader.results.collectAsState()
+    val searching by Downloader.searching.collectAsState()
+    val focus = androidx.compose.ui.platform.LocalFocusManager.current
+    fun closeSearch() {
+        Downloader.results.value = null
+        query = ""
+    }
+    BackHandler(enabled = results != null) { closeSearch() }
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).pointerInput(Unit) { detectTapGestures { } }) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onClose) { Icon(HmIcons.Back, "Zurück") }
             Text("Vorschläge", fontSize = 24.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-            TextButton(onClick = { reload() }) { Text("Neu laden") }
+            TextButton(onClick = { player.reset(); playing = null; reload() }) { Text("Neue Songs") }
+        }
+        androidx.compose.material3.OutlinedTextField(
+            value = query, onValueChange = { query = it }, singleLine = true,
+            placeholder = { Text("Song auf YouTube suchen") },
+            shape = RoundedCornerShape(26.dp),
+            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Search),
+            keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSearch = { focus.clearFocus(); player.reset(); playing = null; Downloader.search(ctx, query) }),
+            trailingIcon = { if (results != null) TextButton(onClick = { closeSearch() }) { Text("✕") } },
+            modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 8.dp),
+        )
+        val hits = results
+        if (hits != null) {  // eigene Suche statt der Vorschläge
+            SearchResults(hits, searching) { Downloader.download(ctx, "https://youtu.be/${it.id}", toast = true) }
+            return@Column
         }
         Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("Album-Cover zeigen", Modifier.weight(1f), fontSize = 14.sp)

@@ -33,7 +33,11 @@ Die Symbole sind unten angeheftet. Mit dem Mausrad über der Leiste blätterst d
 
 Unter Funktionen → *HoverBar* lassen sich **Home (Apps)** und **Kalender** einzeln ausschalten. Ohne Home startet HoverBar in der Musik-Bibliothek (Speicher ist dann auch ausgeblendet); sind beide aus, ist es nur noch Musik-Player. Erweiterungen entfernst du im Reiter *Erweiterungen*.
 
-Die Symbole der linken Leiste lassen sich mit der Maus ziehen und so umsortieren.
+Die Symbole der linken Leiste lassen sich in den Einstellungen mit der Maus ziehen und so umsortieren.
+
+**Tutorial:** Beim ersten Öffnen führt HoverBar in sechs Schritten durch die wichtigsten Funktionen. Danach über das Fragezeichen neben dem Zahnrad; es lässt sich (Rechtsklick oder letzte Seite) in einen eigenen Reiter links neben Design verschieben.
+
+**Info:** Der Reiter ⓘ in den Einstellungen verlinkt das GitHub-Projekt.
 
 ## Apps
 
@@ -116,7 +120,8 @@ Logo, Titel, Zahnrad; rechts Bluetooth, WLAN, Akku und das Menü `···` (Neu l
 ## Daten und Datenschutz
 
 - Einstellungen: `%APPDATA%\HoverBar\HoverBar.ini`; Termine: `termine.txt` im selben Ordner.
-- Netzwerk nur auf Anforderung: YouTube-Downloads, Cover-Suche (Deezer/iTunes), Songtexte (lrclib.net), Website-Symbole der Favoriten-Links (und das Claude-Symbol von claude.ai, sobald du den Reiter „Erweiterungen“ öffnest oder Claude hinzugefügt hast), `yt-dlp`/WizTree/HoverBar-Updates (GitHub bzw. diskanalyzer.com), die Claude-Seite. Es gibt keine Konten und keine Telemetrie.
+- Beim Öffnen fragt HoverBar höchstens einmal pro Stunde bei GitHub nach einer neueren Version und bietet sie mit den Neuerungen an; HoverMusic tut das bei jedem Öffnen. Installiert wird nur nach deiner Zustimmung.
+- Netzwerk sonst nur auf Anforderung: YouTube-Downloads, Cover-Suche (Deezer/iTunes), Songtexte (lrclib.net), Website-Symbole der Favoriten-Links (und das Claude-Symbol von claude.ai, sobald du den Reiter „Erweiterungen“ öffnest oder Claude hinzugefügt hast), `yt-dlp`/WizTree/HoverBar-Updates (GitHub bzw. diskanalyzer.com), die Claude-Seite. Es gibt keine Konten und keine Telemetrie.
 - Stürzt HoverBar ab, startet die geplante Aufgabe „HoverBar Neustart“ es neu (wird beim ersten Start automatisch angelegt).
 
 ## Bauen

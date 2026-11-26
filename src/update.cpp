@@ -77,6 +77,33 @@ static std::string JsonStr(const std::string& j, const std::string& key, size_t 
     return j.substr(p, e - p);
 }
 
+// "body" eines Releases (JSON-Text mit \n, \" …) als lesbarer Text ohne Markdown-Zeichen
+static std::wstring ReleaseNotes(const std::string& seg) {
+    size_t p = seg.find("\"body\":\"");
+    if (p == std::string::npos) return L"";
+    std::string out, line;
+    auto flush = [&] {
+        if (line.rfind("Full Changelog", 0) != 0 && line.rfind("Download:", 0) != 0 && !line.empty()) out += line + "\n";
+        line.clear();
+    };
+    for (p += 8; p < seg.size() && seg[p] != '"'; p++) {
+        char c = seg[p];
+        if (c == '\\' && p + 1 < seg.size()) {
+            c = seg[++p];
+            if (c == 'n') { flush(); continue; }
+            if (c == 'r') continue;
+            if (c == 'u' && p + 4 < seg.size()) { p += 4; continue; }  // GitHub schreibt Umlaute direkt als UTF-8
+            if (c == 't') c = ' ';
+        }
+        if (c != '*' && c != '`') line += c;
+    }
+    flush();
+    int n = MultiByteToWideChar(CP_UTF8, 0, out.c_str(), (int)out.size(), nullptr, 0);
+    std::wstring w(n, 0);
+    if (n) MultiByteToWideChar(CP_UTF8, 0, out.c_str(), (int)out.size(), &w[0], n);
+    return w;
+}
+
 // Release-Angaben holen: Version, Download-Adresse der HoverBar.exe, Prüfsumme
 static bool QueryLatest(std::wstring& err) {
     std::wstring api = Widen(std::string("https://api.github.com/repos/") + HB_REPO + "/releases?per_page=20&t=") + std::to_wstring(GetTickCount64());
@@ -92,7 +119,8 @@ static bool QueryLatest(std::wstring& err) {
     if (!ok || j.empty()) { err = L"Antwort von GitHub nicht lesbar."; return false; }
     // Im Repo liegen auch Releases anderer Apps (z. B. HoverMusic, Tag "hovermusic-v…"): das neueste Release mit Tag "v<Zahl>…"
     // und einer HoverBar.exe nehmen (Entwürfe und Vorabversionen überspringen). Pro Release steht der Tag vor seinen Dateien.
-    std::string seg, tag;
+    std::string seg, tag, newestSeg, newestTag;
+    std::wstring notes;
     size_t pos = 0;
     const std::string key = "\"tag_name\":\"";
     while ((pos = j.find(key, pos)) != std::string::npos) {
@@ -103,9 +131,11 @@ static bool QueryLatest(std::wstring& err) {
         if (t.size() < 2 || t[0] != 'v' || !isdigit((unsigned char)t[1])) continue;
         if (seg.find("\"draft\":true") != std::string::npos || seg.find("\"prerelease\":true") != std::string::npos) continue;
         if (seg.find("\"name\":\"HoverBar.exe\"") == std::string::npos) continue;
-        tag = t;
-        break;
+        if (newestTag.empty()) { newestTag = t; newestSeg = seg; }
+        if (Newer(Widen(t)) && notes.size() < 1200) notes += Widen(t) + L"\n" + ReleaseNotes(seg) + L"\n";
     }
+    tag = newestTag;
+    seg = newestSeg;
     if (tag.empty()) { err = L"Keine veröffentlichte Version gefunden."; return false; }
     size_t p = seg.find("\"name\":\"HoverBar.exe\"");
     std::string url = JsonStr(seg, "browser_download_url", p);
@@ -118,6 +148,8 @@ static bool QueryLatest(std::wstring& err) {
     if (digest.rfind("sha256:", 0) == 0) hash = digest.substr(7);
     std::lock_guard<std::mutex> l(g_mu);
     g_st.latest = Widen(tag);
+    if (notes.size() > 1200) notes = notes.substr(0, 1200) + L" …";
+    g_st.notes = notes;
     g_url = Widen(url);
     g_hashUrl = hurl.rfind("https://github.com/", 0) == 0 ? Widen(hurl) : L"";
     g_hash = Widen(hash);
