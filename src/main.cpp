@@ -31,6 +31,7 @@
 #include "update.h"
 #include "qrcode.h"
 #include "popup.h"
+#include "parse.h"
 #include <wincrypt.h>
 #include <softpub.h>
 #include <wintrust.h>
@@ -222,7 +223,7 @@ struct AppFolder {
     int shown = 0;  // davon direkt in der Ordnerkarte sichtbar
 };
 
-enum class View { Folders, Folder, Search, Settings, Music, MusicList, SongEdit, MusicSettings, AllApps, Calendar, Storage, Chat, NowPlaying, Timer, Suggest };
+enum class View { Folders, Folder, Search, Settings, Music, MusicList, SongEdit, MusicSettings, AllApps, Calendar, Storage, Chat, NowPlaying, Timer, Suggest, Todo };
 enum class HT {
     None, Card, Slot, Mini, Cell, Back, Menu, Gear,
     // Einstellungen
@@ -233,7 +234,7 @@ enum class HT {
     // Musik
     MusicJob, MusicEmpty, MCard, MTile, MMore, MPlayAll, MRow, PlHead, PlUp, PlDown, PlDelete, PlDrop, PlSongRow,
     AllSongRow, AllSongAdd, AllSongEdit, MusicOpen, MProgress, EditCover, EditBtn, EditInfo, CoverPick, EditLabel, EditField,
-    MAlbum, VolIcon, MusicManage, MSize, MSort, GrabKeyBtn, MReload, TimerWheel, TimerShow, TimerBtn, CtlKeyBtn, ImportBtn, SuggestRow, SuggestAdd, SuggestInfo, SuggestReload
+    MAlbum, VolIcon, MusicManage, MSize, MSort, GrabKeyBtn, MReload, TimerWheel, TimerShow, TimerBtn, CtlKeyBtn, ImportBtn, SuggestRow, SuggestAdd, SuggestInfo, SuggestReload, SuggestCovers, TodoRow, TodoDel, CalSync
 };
 struct Hit {
     RECT rc;
@@ -416,7 +417,7 @@ struct State {
     std::vector<RecentEntry> recent;
     bool showRecent = false;
     // Kalender: angezeigter Monat, gewählter Tag (jjjjmmtt) und eigene Termine (termine.txt)
-    struct CalEntry { int date; std::wstring time, title; };
+    struct CalEntry { int date; std::wstring time, title; bool external = false; };  // external: aus Google Kalender, nur lesen
     std::vector<CalEntry> events;
     bool eventsLoaded = false;
     int calY = 0, calM = 0, calSel = 0;
@@ -525,7 +526,18 @@ struct State {
     // Song-Steuerung (zusammen mit der gehaltenen Öffnen-Taste): Play/Pause, weiter, zurück, lauter, leiser
     UINT ctlKey[5] = {VK_HOME, VK_NEXT, VK_PRIOR, VK_OEM_PLUS, VK_OEM_MINUS};
     int ctlCapture = -1;                         // wartet auf die neue Taste für diese Funktion
-    bool calendarOn = true;                      // Kalender-Seite
+    bool calendarOn = true;                      // Erweiterung "Kalender"
+    unsigned plugOpen = 0;                       // aufgeklappte Karten im Reiter "Erweiterungen" (Bit je Karte)
+    bool suggestCovers = true;                   // Albumbilder bei den Hörproben
+    std::wstring icalUrl;                        // geheime iCal-Adresse (Google Kalender), nur lokal gespeichert
+    std::vector<CalEntry> icalEvents;
+    bool icalBusy = false, icalFailed = false;
+    ULONGLONG icalAt = 0;
+    std::vector<int> navOrder;                   // Reihenfolge der Symbole links
+    int navDrag = -1, navDragY = 0;
+    bool navMoved = false;
+    bool todoOn = false, todoLoaded = false;     // Erweiterung "To-do-Liste"
+    std::vector<std::pair<bool, std::wstring>> todos;  // erledigt, Text
     int glass = 50;                              // Glas-Stärke: 0 matt, 50 wie bisher, 100 wie bei Apple
     int fontScale = 100, spacing = 100;          // Schriftgröße und Zeilenabstand in Prozent
     int widthScale = 100, workW = 0;             // Breite der Leiste in Prozent; Breite des Arbeitsbereichs beim Öffnen
@@ -671,6 +683,15 @@ static void InitIni() {
     g.fontScale = std::max(80, std::min(140, (int)GetPrivateProfileIntW(L"Einstellungen", L"Schriftgroesse", 100, g.ini.c_str())));
     g.spacing = std::max(80, std::min(160, (int)GetPrivateProfileIntW(L"Einstellungen", L"Zeilenabstand", 100, g.ini.c_str())));
     g.suggestOn = GetPrivateProfileIntW(L"Erweiterungen", L"Vorschlaege", 0, g.ini.c_str()) != 0;
+    g.suggestCovers = GetPrivateProfileIntW(L"Erweiterungen", L"VorschlagCover", 1, g.ini.c_str()) != 0;
+    g.todoOn = GetPrivateProfileIntW(L"Erweiterungen", L"Todo", 0, g.ini.c_str()) != 0;
+    g.icalUrl = IniGet(L"Erweiterungen", L"KalenderICal");
+    {
+        std::wstring order = IniGet(L"Einstellungen", L"Leiste");
+        g.navOrder.clear();
+        for (size_t a = 0; a < order.size(); a = order.find(L',', a) == std::wstring::npos ? order.size() : order.find(L',', a) + 1)
+            g.navOrder.push_back(_wtoi(order.c_str() + a));
+    }
     g.appsOn = GetPrivateProfileIntW(L"Funktionen", L"AppLauncher", 1, g.ini.c_str()) != 0;
     g.calendarOn = GetPrivateProfileIntW(L"Funktionen", L"Kalender", 1, g.ini.c_str()) != 0;
     g.wheel[0] = GetPrivateProfileIntW(L"Timer", L"Stunden", 0, g.ini.c_str()) % 24;
@@ -1259,9 +1280,37 @@ static int WeekdayMon0(int y, int m, int d) {  // 0 = Montag … 6 = Sonntag
     return (w + 6) % 7;
 }
 static std::wstring EventsFile() { return g.ini.substr(0, g.ini.find_last_of(L'\\')) + L"\\termine.txt"; }
+static std::wstring TodoFile() { return g.ini.substr(0, g.ini.find_last_of(L'\\')) + L"\\todo.txt"; }
+static void LoadTodos() {  // Zeilen "0|Text" / "1|Text", UTF-16
+    g.todos.clear();
+    g.todoLoaded = true;
+    HANDLE h = CreateFileW(TodoFile().c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return;
+    DWORD size = GetFileSize(h, nullptr), got = 0;
+    std::wstring all(size < 1024 * 1024 ? size / sizeof(wchar_t) : 0, L'\0');
+    if (!all.empty()) ReadFile(h, &all[0], (DWORD)(all.size() * sizeof(wchar_t)), &got, nullptr);
+    CloseHandle(h);
+    for (size_t a = 0; a < all.size();) {
+        size_t b = all.find(L'\n', a);
+        if (b == std::wstring::npos) b = all.size();
+        std::wstring l = all.substr(a, b - a);
+        a = b + 1;
+        if (l.size() > 2 && l[1] == L'|') g.todos.push_back({l[0] == L'1', l.substr(2)});
+    }
+}
+static void SaveTodos() {  // erst daneben schreiben, dann ersetzen: nie eine halbe Liste
+    std::wstring all, tmp = TodoFile() + L".tmp";
+    for (auto& t : g.todos) all += (t.first ? L"1|" : L"0|") + t.second + L"\n";
+    HANDLE h = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return;
+    DWORD wr = 0;
+    bool ok = WriteFile(h, all.data(), (DWORD)(all.size() * sizeof(wchar_t)), &wr, nullptr) != FALSE;
+    CloseHandle(h);
+    if (ok) MoveFileExW(tmp.c_str(), TodoFile().c_str(), MOVEFILE_REPLACE_EXISTING);
+}
 static void LoadEvents() {
     g.eventsLoaded = true;
-    g.events.clear();
+    g.events = g.icalEvents;
     HANDLE h = CreateFileW(EventsFile().c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
     if (h == INVALID_HANDLE_VALUE) return;
     LARGE_INTEGER sz;
@@ -1285,7 +1334,8 @@ static void LoadEvents() {
 }
 static void SaveEvents() {
     std::wstring w;
-    for (auto& e : g.events) w += std::to_wstring(e.date) + L"\t" + e.time + L"\t" + e.title + L"\r\n";
+    for (auto& e : g.events)
+        if (!e.external) w += std::to_wstring(e.date) + L"\t" + e.time + L"\t" + e.title + L"\r\n";
     int n = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), nullptr, 0, nullptr, nullptr);
     std::string u(n, '\0');
     WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), &u[0], n, nullptr, nullptr);
@@ -1510,6 +1560,8 @@ static int ContentTop() { return g.view == View::Music ? S(176) : S(108); }  // 
 static bool DuckEnabled() { return g.duckOn; }
 static HBITMAP MakeLogoBitmap(int px);
 static std::wstring HeaderTitle();
+static void CalendarSyncClick();
+static void Message(const std::wstring& text);
 static std::vector<int> NavPages();
 static int ContentBottom();
 static SIZE_T RunningRam(int idx);
@@ -1618,6 +1670,7 @@ static void LayoutDesign(int W, int pad, int y0) {
 // Funktionen: Schalter für Musikquelle, Leiser bei Videos, Tasten
 // Erweiterungen: optionale Erweiterungen, die man bei Bedarf installiert
 static void LayoutSuggested(int W, int pad, int y0) {
+    const size_t first = g.hits.size();
     int cw = W - 2 * pad, y = y0;
     static bool askedIcon = false;
     if (!askedIcon) { askedIcon = true; StartFavicon(L"claude.ai"); }  // öffentliches Claude-Symbol für die Karte (einmalig, nur beim Öffnen dieses Reiters)
@@ -1664,6 +1717,37 @@ static void LayoutSuggested(int W, int pad, int y0) {
         if (g.suggestOn) g.hits.push_back({{pad + cw - S(16) - 2 * bw - S(10), by5, pad + cw - S(16) - bw - S(10), by5 + bh}, HT::PlugBtn, 15});
         y += ch5 + S(12);
     }
+    for (int card = 5; card <= 6; card++) {  // Kalender, To-do-Liste
+        int h6 = S(130);
+        g.hits.push_back({{pad, y, pad + cw, y + h6}, HT::PlugCard, card});
+        int by6 = y + h6 - S(14) - bh, id = card == 5 ? 16 : 18;
+        bool on = card == 5 ? g.calendarOn : g.todoOn;
+        g.hits.push_back({{pad + cw - S(16) - bw, by6, pad + cw - S(16), by6 + bh}, HT::PlugBtn, id});
+        if (on) g.hits.push_back({{pad + cw - S(16) - 2 * bw - S(10), by6, pad + cw - S(16) - bw - S(10), by6 + bh}, HT::PlugBtn, id + 1});
+        y += h6 + S(12);
+    }
+    // eingeklappte Karten: nur Kopfzeile, ihre Knöpfe weglassen und alles darunter nachrücken
+    {
+        std::vector<Hit> folded;
+        int up = 0, closed = S(72);
+        bool open = true;
+        for (size_t i = first; i < g.hits.size(); i++) {
+            Hit h = g.hits[i];
+            if (h.type == HT::PlugCard) {
+                open = (g.plugOpen & (1u << h.idx)) != 0;
+                OffsetRect(&h.rc, 0, -up);
+                if (!open) {
+                    up += h.rc.bottom - h.rc.top - closed;
+                    h.rc.bottom = h.rc.top + closed;
+                }
+            } else if (!open) continue;
+            else OffsetRect(&h.rc, 0, -up);
+            folded.push_back(h);
+        }
+        g.hits.resize(first);
+        g.hits.insert(g.hits.end(), folded.begin(), folded.end());
+        y -= up;
+    }
     g.contentH = y - y0;
 }
 
@@ -1678,7 +1762,7 @@ static void LayoutFunctions(int W, int pad, int y0) {
     };
     int y = y0;
     {   // HoverBar selbst: Version und Update holen
-        int ch = headH + 3 * rowH2 + ip;
+        int ch = headH + 2 * rowH2 + ip;
         g.hits.push_back({{pad, y, pad + cw, y + ch}, HT::SetCard, -8, -8});
         g.hits.push_back({{pad, y, pad + cw, y + headH}, HT::SetSection, 7});
         RECT rr = {pad + ip, y + headH, pad + cw - ip, y + headH + rowH2};
@@ -1687,7 +1771,6 @@ static void LayoutFunctions(int W, int pad, int y0) {
         g.hits.push_back({{rr.right - bw - S(6), by, rr.right - S(6), by + bh}, HT::UpdateBtn, 0});
         int ry2 = y + headH + rowH2;
         rowToggle(ry2, 27, 22);  // Home (Apps)
-        rowToggle(ry2, 33, 23);  // Kalender
         y += ch + gap;
     }
     {   // Musik: Hauptschalter, die übrigen Optionen nur, wenn er an ist
@@ -2397,9 +2480,21 @@ static void Layout() {
         LayoutMusicList(W, pad, y0);
     } else if (g.view == View::SongEdit) {
         LayoutSongEdit(W, pad, y0);
+    } else if (g.view == View::Todo) {
+        if (!g.todoLoaded) LoadTodos();
+        int cw = W - 2 * pad, y = y0, rh = RowH(46);
+        if (g.todos.empty()) g.hits.push_back({{pad, y, pad + cw, y + S(60)}, HT::SuggestInfo, 1});
+        for (int i = 0; i < (int)g.todos.size(); i++, y += rh + S(4)) {
+            g.hits.push_back({{pad, y, pad + cw, y + rh}, HT::TodoRow, i});
+            g.hits.push_back({{pad + cw - S(42), y + (rh - S(32)) / 2, pad + cw - S(8), y + (rh + S(32)) / 2}, HT::TodoDel, i});
+        }
+        g.contentH = y - y0;
     } else if (g.view == View::Suggest) {
         int cw = W - 2 * pad, y = y0, rh = RowH(58);
-        if (!g.showSearch) g.hits.push_back({{W - pad - S(110), S(60), W - pad, S(92)}, HT::SuggestReload, 0});
+        if (!g.showSearch) {
+            g.hits.push_back({{W - pad - S(110), S(60), W - pad, S(92)}, HT::SuggestReload, 0});
+            g.hits.push_back({{W - pad - S(232), S(60), W - pad - S(118), S(92)}, HT::SuggestCovers, 0});
+        }
         if (SuggestBusy() || SuggestList().empty()) g.hits.push_back({{pad, y, pad + cw, y + S(60)}, HT::SuggestInfo, 0});
         else
             for (int i = 0; i < (int)SuggestList().size(); i++, y += rh + S(4)) {
@@ -2458,6 +2553,8 @@ static void Layout() {
             y += S(46);
         }
         g.hits.push_back({{pad, y, pad + cw, y + S(38)}, HT::CalAdd, 0});
+        y += S(48);
+        g.hits.push_back({{pad, y, pad + cw, y + S(38)}, HT::CalSync, 0});
         y += S(48);
         g.contentH = y - y0;
     } else if (g.view == View::AllApps) {
@@ -2580,6 +2677,7 @@ static std::wstring HeaderTitle() {
     if (g.view == View::Storage) return L"Speicher";
     if (g.view == View::Chat) return L"Claude";
     if (g.view == View::Timer) return L"Timer";
+    if (g.view == View::Todo) return L"To-do";
     if (g.view == View::Suggest) return g.showSearch ? L"Suchtreffer" : L"Vorschläge";
     if (g.view == View::NowPlaying) return L"Läuft gerade";
     return L"Apps";
@@ -2593,14 +2691,18 @@ static std::vector<int> NavPages() {
     if (g.calendarOn) p.push_back(2);
     if (g.timerOn) p.push_back(5);  // Timer (Erweiterung)
     if (g.suggestOn && g.musicOn) p.push_back(6);  // Vorschläge (Erweiterung)
+    if (g.todoOn) p.push_back(7);                  // To-do-Liste (Erweiterung)
     if (g.claudeOn) p.push_back(4);  // Claude-Chat (Erweiterung)
     if (g.appsOn && !WizTree_Exe().empty()) p.push_back(3);
+    auto rank = [](int page) { return (int)(std::find(g.navOrder.begin(), g.navOrder.end(), page) - g.navOrder.begin()); };
+    std::stable_sort(p.begin(), p.end(), [&](int a, int b) { return rank(a) < rank(b); });  // unbekannte bleiben hinten
     return p;
 }
 static int NavPage() {
     if (g.view == View::Storage) return 3;
     if (g.view == View::Chat) return 4;
     if (g.view == View::Timer) return 5;
+    if (g.view == View::Todo) return 7;
     if (g.view == View::Suggest) return g.showSearch ? 1 : 6;
     if (g.view == View::Calendar) return 2;
     if (g.view == View::Music || g.view == View::MusicList || g.view == View::SongEdit || g.view == View::MusicSettings || g.view == View::NowPlaying) return 1;
@@ -3178,12 +3280,30 @@ static void DrawHit(HDC dc, const Hit& h, bool hot, int cardHot) {
         FillRound(dc, h.rc, S(10), hot ? cHover : cSearch);
         Text(dc, L"Datei wählen …", h.rc, g.fSmall, cText, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         break;
+    case HT::SuggestCovers:
+        FillRound(dc, h.rc, S(16), g.suggestCovers ? cAccent : hot ? cCardHot : cCard);
+        Text(dc, g.suggestCovers ? L"Cover: an" : L"Cover: aus", h.rc, g.fSmall, cText, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        break;
+    case HT::TodoRow:
+    case HT::TodoDel: {
+        if (h.idx >= (int)g.todos.size()) break;
+        if (h.type == HT::TodoDel) {
+            if (hot) FillRound(dc, h.rc, S(16), cHover);
+            Text(dc, L"\uE74D", h.rc, g.fGlyph, cDim, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            break;
+        }
+        bool done = g.todos[h.idx].first;
+        FillRound(dc, h.rc, S(12), hot ? cHover : cCard);
+        Text(dc, done ? L"\uE73A" : L"\uE739", {h.rc.left + S(8), h.rc.top, h.rc.left + S(40), h.rc.bottom}, g.fGlyph, done ? RGB(110, 210, 140) : cText, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        Text(dc, g.todos[h.idx].second, {h.rc.left + S(46), h.rc.top, h.rc.right - S(48), h.rc.bottom}, g.fText, done ? cDim : cText, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        break;
+    }
     case HT::SuggestReload:
         FillRound(dc, h.rc, S(16), hot ? cCardHot : cCard);
         Text(dc, L"Neu laden", h.rc, g.fSmall, cText, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         break;
     case HT::SuggestInfo:
-        Text(dc, SuggestBusy() ? L"Suche …" : g.showSearch ? L"Nichts gefunden." : L"Nichts gefunden. Dafür braucht es Songs mit Künstler und Internet.", h.rc, g.fSmall, cDim, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        Text(dc, g.view == View::Todo ? L"Noch keine Aufgaben." : SuggestBusy() ? L"Suche …" : g.showSearch ? L"Nichts gefunden." : L"Nichts gefunden. Dafür braucht es Songs mit Künstler und Internet.", h.rc, g.fSmall, cDim, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
         break;
     case HT::SuggestRow:
     case HT::SuggestAdd: {
@@ -3196,8 +3316,13 @@ static void DrawHit(HDC dc, const Hit& h, bool hot, int cardHot) {
         }
         FillRound(dc, h.rc, S(12), hot ? cHover : cCard);
         Text(dc, g.showSearch ? L"\uEC4F" : g.previewing == h.idx ? L"\uE769" : L"\uE768", {h.rc.left + S(6), h.rc.top, h.rc.left + S(42), h.rc.bottom}, g.fGlyph, cText, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-        int mid = (h.rc.top + h.rc.bottom) / 2;
-        Text(dc, s.title, {h.rc.left + S(48), h.rc.top + S(4), h.rc.right - S(58), mid + S(2)}, g.fHead, cText, DT_LEFT | DT_BOTTOM | DT_SINGLELINE | DT_END_ELLIPSIS);
+        int mid = (h.rc.top + h.rc.bottom) / 2, tx = h.rc.left + S(48);
+        if (g.suggestCovers && !g.showSearch && !s.cover.empty()) {
+            int px = h.rc.bottom - h.rc.top - S(14);
+            DrawCover(dc, s.cover, tx, h.rc.top + S(7), px);
+            tx += px + S(10);
+        }
+        Text(dc, s.title, {tx, h.rc.top + S(4), h.rc.right - S(58), mid + S(2)}, g.fHead, cText, DT_LEFT | DT_BOTTOM | DT_SINGLELINE | DT_END_ELLIPSIS);
         std::wstring sub = s.artist;
         int percent = -1;  // laufender Download zu diesem Treffer
         if (s.added)
@@ -3208,9 +3333,9 @@ static void DrawHit(HDC dc, const Hit& h, bool hot, int cardHot) {
                     : j.stage == 2 ? std::wstring(L"Wird umgewandelt …") : j.stage == 3 ? std::wstring(L"Cover …") : std::wstring(L"Gespeichert");
                 if (j.stage == -1) percent = -1;
             }
-        Text(dc, sub, {h.rc.left + S(48), mid + S(2), h.rc.right - S(58), h.rc.bottom - S(7)}, g.fSmall, cDim, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS);
+        Text(dc, sub, {tx, mid + S(2), h.rc.right - S(58), h.rc.bottom - S(7)}, g.fSmall, cDim, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS);
         if (percent >= 0) {
-            RECT bar = {h.rc.left + S(48), h.rc.bottom - S(6), h.rc.right - S(58), h.rc.bottom - S(3)};
+            RECT bar = {tx, h.rc.bottom - S(6), h.rc.right - S(58), h.rc.bottom - S(3)};
             FillRound(dc, bar, S(3), cSearch);
             if (percent > 0) FillRound(dc, {bar.left, bar.top, bar.left + (bar.right - bar.left) * percent / 100, bar.bottom}, S(3), cAccent);
         }
@@ -3485,6 +3610,27 @@ static void DrawHit(HDC dc, const Hit& h, bool hot, int cardHot) {
         }
         break;
     case HT::PlugCard: {  // Erweiterung: Beschreibung, Lizenz, Stand
+        {
+            static const wchar_t* names[] = {L"WizTree – Speicherbelegung", L"Claude – KI-Chat", L"Musik-Sync – Musik aufs Handy", L"Timer", L"Songvorschläge", L"Kalender", L"To-do-Liste"};
+            static const wchar_t* icons[] = {L"", L"", L"", L"", L"", L"", L""};
+            static const COLORREF colors[] = {RGB(90, 140, 90), RGB(0, 0, 0), RGB(66, 120, 214), RGB(224, 138, 60), RGB(150, 100, 220), RGB(220, 80, 90), RGB(60, 170, 120)};
+            if (h.idx >= 0 && h.idx <= 6) {
+                bool open = (g.plugOpen & (1u << h.idx)) != 0;
+                RECT chev = {h.rc.right - S(48), h.rc.top, h.rc.right - S(14), h.rc.top + S(72)};
+                if (!open) {
+                    FillRound(dc, h.rc, S(18), hot ? cCardHot : cCard);
+                    RECT ic = {h.rc.left + S(16), h.rc.top + S(14), h.rc.left + S(60), h.rc.top + S(58)};
+                    FillRound(dc, ic, S(12), h.idx == 1 ? cCardHot : colors[h.idx]);
+                    HBITMAP cb = h.idx == 1 ? ClaudeIcon(S(32)) : nullptr;
+                    if (cb) g.iconQueue.push_back({-3, ic.left + S(6), ic.top + S(6), S(32), CurrentClip(dc), g.drawFade, cb});
+                    else Text(dc, icons[h.idx], ic, g.fGlyphL, RGB(255, 255, 255), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                    Text(dc, names[h.idx], {ic.right + S(14), h.rc.top, chev.left, h.rc.bottom}, g.fHead, cText, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+                    Text(dc, L"", chev, g.fGlyph, cDim, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                    break;
+                }
+                Text(dc, L"", chev, g.fGlyph, cDim, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            }
+        }
         if (h.idx == 1) {  // Claude-Chat
             FillRound(dc, h.rc, S(18), cCard);
             RECT ic = {h.rc.left + S(18), h.rc.top + S(18), h.rc.left + S(18) + S(44), h.rc.top + S(18) + S(44)};
@@ -3504,6 +3650,20 @@ static void DrawHit(HDC dc, const Hit& h, bool hot, int cardHot) {
                  {h.rc.left + S(18), h.rc.top + S(96), h.rc.right - S(18), h.rc.top + S(116)}, g.fSmall, cDim, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
             Text(dc, g.claudeOn ? L"Hinzugefügt" : L"Nicht hinzugefügt", {h.rc.left + S(18), h.rc.bottom - S(50), h.rc.right - S(340), h.rc.bottom - S(14)}, g.fSmall,
                  g.claudeOn ? RGB(110, 210, 140) : cDim, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            break;
+        }
+        if (h.idx == 5 || h.idx == 6) {  // Kalender, To-do-Liste
+            bool cal = h.idx == 5, on = cal ? g.calendarOn : g.todoOn;
+            FillRound(dc, h.rc, S(18), cCard);
+            RECT ic = {h.rc.left + S(18), h.rc.top + S(18), h.rc.left + S(18) + S(44), h.rc.top + S(18) + S(44)};
+            FillRound(dc, ic, S(12), cal ? RGB(220, 80, 90) : RGB(60, 170, 120));
+            Text(dc, cal ? L"\uE787" : L"\uE73A", ic, g.fGlyphL, RGB(255, 255, 255), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            int tx = ic.right + S(14);
+            Text(dc, cal ? L"Kalender" : L"To-do-Liste", {tx, h.rc.top + S(16), h.rc.right - S(18), h.rc.top + S(40)}, g.fHead, cText, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            Text(dc, cal ? L"Monatsansicht mit eigenen Terminen." : L"Aufgaben abhaken, bleibt auf diesem PC.", {tx, h.rc.top + S(40), h.rc.right - S(18), h.rc.top + S(60)}, g.fSmall, cDim,
+                 DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+            Text(dc, on ? L"Hinzugefügt" : L"Nicht hinzugefügt", {h.rc.left + S(18), h.rc.bottom - S(50), h.rc.right - S(340), h.rc.bottom - S(14)}, g.fSmall,
+                 on ? RGB(110, 210, 140) : cDim, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
             break;
         }
         if (h.idx == 4) {  // Vorschläge
@@ -3603,6 +3763,12 @@ static void DrawHit(HDC dc, const Hit& h, bool hot, int cardHot) {
                 Text(dc, ss.state == 1 ? L"Bitte warten …" : g.syncOn ? L"Jetzt abgleichen" : L"Einrichten …", h.rc, g.fHead, RGB(255, 255, 255),
                      DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             }
+            break;
+        }
+        if (h.idx >= 16 && h.idx <= 19) {  // Kalender, To-do-Liste
+            bool remove = h.idx % 2 == 1, on = h.idx <= 17 ? g.calendarOn : g.todoOn;
+            FillRound(dc, h.rc, S(10), remove ? (hot ? RGB(200, 60, 60) : cSearch) : hot ? RGB(120, 180, 255) : cAccent);
+            Text(dc, remove ? L"Entfernen" : on ? L"Öffnen" : L"Hinzufügen", h.rc, g.fHead, RGB(255, 255, 255), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             break;
         }
         if (h.idx == 14 || h.idx == 15) {  // Vorschläge
@@ -3758,6 +3924,11 @@ static void DrawHit(HDC dc, const Hit& h, bool hot, int cardHot) {
         Text(dc, e.title, {h.rc.left + S(104), h.rc.top, h.rc.right - S(12), h.rc.bottom}, g.fText, cText, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
         break;
     }
+    case HT::CalSync:
+        FillRound(dc, h.rc, S(12), hot ? cHover : cSearch);
+        Text(dc, g.icalUrl.empty() ? L"Google-Kalender verbinden …" : g.icalBusy ? L"Google-Kalender wird geladen …" : g.icalFailed ? L"Google-Kalender: Abruf fehlgeschlagen"
+                 : L"Google-Kalender verbunden (nur lesen)", h.rc, g.fText, g.icalFailed ? RGB(255, 150, 150) : cText, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        break;
     case HT::CalAdd:
         FillRound(dc, h.rc, S(12), hot ? cHover : cSearch);
         Text(dc, L"+  Termin hinzufügen", h.rc, g.fText, cText, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
@@ -4527,7 +4698,7 @@ static void DrawScene(HDC dc, int W, int H) {
             bool sel = NavPage() == h.idx;
             if (sel) FillRound(dc, h.rc, S(12), cAccent);
             else if (i == g.hot) FillRound(dc, h.rc, S(12), cHover);
-            static const wchar_t* gl[7] = {L"\uE80F", L"\uEC4F", L"\uE787", L"\uEDA2", L"\uE8BD", L"\uE916", L"\uE734"};
+            static const wchar_t* gl[8] = {L"\uE80F", L"\uEC4F", L"\uE787", L"\uEDA2", L"\uE8BD", L"\uE916", L"\uE734", L"\uE73A"};
             if (h.idx == 4) {  // Claude: das echte Claude-Symbol (von claude.ai), bis es geladen ist ein Sprechblasen-Symbol
                 int px = S(28);
                 if (HBITMAP cb = ClaudeIcon(px)) {
@@ -4577,10 +4748,12 @@ static void DrawScene(HDC dc, int W, int H) {
             Text(dc, st.empty() ? L"claude.ai – angemeldet bleibst du dauerhaft" : st, {pad + S(4), S(58), W - pad - S(140), S(94)}, g.fSmall, cDim,
                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
             FillRound(dc, g.chatRect, S(12), cSearch);  // sichtbar, bis das Chat-Fenster darüber liegt
+        } else if (g.view == View::Todo) {
+            DrawField(dc, {pad, S(58), W - pad, S(94)}, g.query, L"Neue Aufgabe, dann Enter", true);
         } else if (g.view == View::Suggest && g.showSearch) {
             DrawField(dc, {pad, S(58), W - pad, S(94)}, g.query, L"Song auf YouTube suchen, dann Enter", true);
         } else if (g.view == View::Suggest) {
-            Text(dc, L"Passend zu deinen meistgehörten Künstlern", {pad + S(4), S(58), W - pad - S(120), S(94)}, g.fSmall, cDim, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+            Text(dc, L"Nach deinen meistgehörten Künstlern", {pad + S(4), S(58), W - pad - S(240), S(94)}, g.fSmall, cDim, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
         } else if (g.view == View::Timer) {
             Text(dc, g.timerRinging ? L"Klingelt" : g.timerEnd ? L"Läuft" : g.timerLeft ? L"Angehalten" : L"Dauer wählen: ziehen oder Mausrad",
                  {pad + S(4), S(58), W - pad, S(94)}, g.fSmall, cDim, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
@@ -4603,7 +4776,7 @@ static void DrawScene(HDC dc, int W, int H) {
     }
 
     int top = ContentTop();
-    if (!g.loaded && g.view != View::Settings && !MusicView() && g.view != View::Timer && g.view != View::Suggest) {
+    if (!g.loaded && g.view != View::Settings && !MusicView() && g.view != View::Timer && g.view != View::Suggest && g.view != View::Todo) {
         Text(dc, L"Apps werden geladen …", {0, top + S(40), W, top + S(80)}, g.fText, cDim, DT_CENTER | DT_SINGLELINE);
     } else if (g.view == View::Search && g.results.empty() && g.namingFor < 0) {
         Text(dc, L"Keine Treffer", {0, top + S(40), W, top + S(80)}, g.fText, cDim, DT_CENTER | DT_SINGLELINE);
@@ -5550,6 +5723,7 @@ static void FinishClose() {
     KillTimer(g.hwnd, T_RELOAD);  // beim nächsten Öffnen wird ohnehin neu gelesen
     g.reload = 0;
     g.ctlCapture = -1;
+    g.plugOpen = 0;  // beim nächsten Öffnen wieder alle eingeklappt
     CommitZone();
     if (g.grabCapture) { g.grabCapture = false; RegisterGrabKey(); }  // Aufnahme abgebrochen
     g.pausedMinutes = 0;
@@ -5837,6 +6011,7 @@ static void GoToPage(int p) {
     else if (p == 3 && !WizTree_Exe().empty()) ShowView(View::Storage, -1);
     else if (p == 4) ShowView(View::Chat, -1);
     else if (p == 5) ShowView(View::Timer, -1);
+    else if (p == 7) ShowView(View::Todo, -1);
     else if (p == 6) {
         g.showSearch = false;
         if (!g.suggestDone) StartSuggest();
@@ -5855,8 +6030,10 @@ static void GoToPage(int p) {
     else ShowView(View::Folders, -1);
 }
 
+static void StartIcal();
 static void ShowView(View v, int folder = -1) {
     StopScrollAnim();
+    if (v == View::Calendar && (!g.icalAt || GetTickCount64() - g.icalAt > 600000)) StartIcal();
     // ohne App-Launcher führen alle Wege zu den Apps in die Bibliothek
     if (v == View::Calendar && !g.calendarOn) v = View::Folders;
     if (!g.appsOn && (v == View::Folders || v == View::Folder || v == View::Search || v == View::AllApps || v == View::Storage)) {
@@ -5884,7 +6061,7 @@ static void LeaveNowPlaying() {
 static void OnQueryChanged() {
     g.caretOn = true;
     SetTimer(g.hwnd, T_CARET, 530, nullptr);
-    if ((MusicView() && g.view != View::MusicSettings) || g.view == View::Suggest) { Render(); return; }
+    if ((MusicView() && g.view != View::MusicSettings) || g.view == View::Suggest || g.view == View::Todo) { Render(); return; }
     if (g.view == View::Settings || g.view == View::MusicSettings) {
         if (!g.creatingFolder) g.scrollR = 0;
         Refresh();
@@ -6148,8 +6325,79 @@ static bool AskEvent(int date, State::CalEntry& e) {
     e.date = date;
     return true;
 }
+enum { WM_APP_ICAL = WM_APP + 110 };  // lParam = std::string* (Kalenderdatei, leer = Fehler)
+static void StartIcal() {
+    if (g.icalUrl.empty() || g.icalBusy) return;
+    g.icalBusy = true;
+    g.icalAt = GetTickCount64();
+    std::thread([url = g.icalUrl, hwnd = g.hwnd] {
+        auto* data = new std::string(Net_Get(url));
+        if (data->find("BEGIN:VCALENDAR") == std::string::npos) data->clear();
+        if (!PostMessageW(hwnd, WM_APP_ICAL, 0, (LPARAM)data)) delete data;
+    }).detach();
+}
+static void UtcToLocal(int& date, int& minutes) {
+    SYSTEMTIME u = {}, l = {};
+    u.wYear = (WORD)(date / 10000);
+    u.wMonth = (WORD)(date / 100 % 100);
+    u.wDay = (WORD)(date % 100);
+    u.wHour = (WORD)(minutes / 60);
+    u.wMinute = (WORD)(minutes % 60);
+    if (!SystemTimeToTzSpecificLocalTime(nullptr, &u, &l)) return;
+    date = l.wYear * 10000 + l.wMonth * 100 + l.wDay;
+    minutes = l.wHour * 60 + l.wMinute;
+}
+static void ApplyIcal(const std::string& data) {
+    g.icalBusy = false;
+    g.icalFailed = data.empty();
+    if (data.empty() || g.icalUrl.empty()) return;  // alte Termine behalten bzw. inzwischen getrennt
+    int today = Today();
+    g.icalEvents.clear();
+    for (auto& e : ParseIcs(data, today - 10000, today + 20000, UtcToLocal)) {
+        wchar_t time[8] = L"";
+        if (e.minutes >= 0) swprintf(time, 8, L"%02d:%02d", e.minutes / 60, e.minutes % 60);
+        int n = MultiByteToWideChar(CP_UTF8, 0, e.title.c_str(), (int)e.title.size(), nullptr, 0);
+        std::wstring title(n, 0);
+        if (n) MultiByteToWideChar(CP_UTF8, 0, e.title.c_str(), (int)e.title.size(), &title[0], n);
+        g.icalEvents.push_back({e.date, time, title, true});
+    }
+    LoadEvents();
+}
+static void CalendarSyncClick() {
+    if (!g.icalUrl.empty()) {
+        HMENU m = CreatePopupMenu();
+        AppendMenuW(m, MF_STRING, 1, L"Jetzt aktualisieren");
+        AppendMenuW(m, MF_STRING, 2, L"Trennen");
+        int cmd = TrackMenu(m);
+        if (cmd == 1) StartIcal();
+        else if (cmd == 2) {
+            g.icalUrl.clear();
+            g.icalEvents.clear();
+            g.icalFailed = false;
+            IniSet(L"Erweiterungen", L"KalenderICal", nullptr);
+            LoadEvents();
+        }
+        Refresh();
+        return;
+    }
+    std::wstring link;
+    ClipText(link);
+    link = AsLink(link);
+    if (link.rfind(L"https://", 0) != 0 || link.find(L".ics") == std::wstring::npos) {
+        Message(L"So geht's:\n1. calendar.google.com → Einstellungen → links deinen Kalender wählen.\n"
+                L"2. Bei \u201EKalender integrieren\u201C die \u201EPrivatadresse im iCal-Format\u201C kopieren.\n"
+                L"3. Hier noch einmal auf \u201Everbinden\u201C klicken.\n\n"
+                L"Wer diese Adresse kennt, kann den Kalender lesen: nicht weitergeben.");
+        return;
+    }
+    g.icalUrl = link;
+    IniSet(L"Erweiterungen", L"KalenderICal", link.c_str());
+    StartIcal();
+    Refresh();
+}
 static void EventMenu(int i) {
     if (i < 0 || i >= (int)g.events.size()) return;
+    if (g.events[i].external) { Message(L"Dieser Termin kommt aus dem Google Kalender. Ändern oder löschen kannst du ihn dort."); return; }
     HMENU m = CreatePopupMenu();
     AppendMenuW(m, MF_STRING, 1, L"Bearbeiten …");
     AppendMenuW(m, MF_STRING, 2, L"Auf morgen verschieben");
@@ -7609,6 +7857,17 @@ static void Activate(int hitIdx, bool right) {
         ImportSpotify();
         Refresh();
         break;
+    case HT::SuggestCovers:
+        g.suggestCovers = !g.suggestCovers;
+        IniSet(L"Erweiterungen", L"VorschlagCover", g.suggestCovers ? L"1" : L"0");
+        Render();
+        break;
+    case HT::TodoRow:
+        if (h.idx < (int)g.todos.size()) { g.todos[h.idx].first = !g.todos[h.idx].first; SaveTodos(); Render(); }
+        break;
+    case HT::TodoDel:
+        if (h.idx < (int)g.todos.size()) { g.todos.erase(g.todos.begin() + h.idx); SaveTodos(); Refresh(); }
+        break;
     case HT::SuggestReload:
         StartSuggest();
         Refresh();
@@ -8044,6 +8303,15 @@ static void Activate(int hitIdx, bool right) {
             Refresh();
             break;
         }
+        if (h.idx >= 16 && h.idx <= 19) {  // Kalender (16/17) und To-do-Liste (18/19); die Einträge bleiben beim Entfernen erhalten
+            bool cal = h.idx <= 17;
+            bool& on = cal ? g.calendarOn : g.todoOn;
+            if (h.idx % 2 == 0 && on) { GoToPage(cal ? 2 : 7); break; }
+            on = h.idx % 2 == 0;
+            IniSet(cal ? L"Funktionen" : L"Erweiterungen", cal ? L"Kalender" : L"Todo", on ? L"1" : L"0");
+            Refresh();
+            break;
+        }
         if (h.idx == 14 || h.idx == 15) {  // Vorschläge hinzufügen / öffnen / entfernen
             if (h.idx == 14 && g.suggestOn) {
                 if (g.musicOn) GoToPage(6);
@@ -8165,6 +8433,13 @@ static void Activate(int hitIdx, bool right) {
         g.calSel = h.idx;
         if (h.f == 1) { g.calY = h.idx / 10000; g.calM = h.idx / 100 % 100; }  // Tag aus Nachbarmonat: dorthin blättern
         Refresh();
+        break;
+    case HT::PlugCard:  // auf- und zuklappen
+        g.plugOpen ^= 1u << h.idx;
+        Refresh();
+        break;
+    case HT::CalSync:
+        CalendarSyncClick();
         break;
     case HT::CalAdd: {
         State::CalEntry e = {g.calSel, L"", L""};
@@ -8437,7 +8712,7 @@ static void QueueLink(const std::wstring& url) {
 static bool Focusable(HT t) {
     switch (t) {
     case HT::None: case HT::SetCard: case HT::SetSection: case HT::SetRowLabel: case HT::Pane: case HT::PaneTitle: case HT::MusicEmpty:
-    case HT::EditInfo: case HT::EditLabel: case HT::PlugCard: case HT::NavBar: case HT::MusicBar: case HT::RecentCard: case HT::CalHead:
+    case HT::EditInfo: case HT::EditLabel: case HT::NavBar: case HT::MusicBar: case HT::RecentCard: case HT::CalHead:
     case HT::CalInfo: case HT::GameHead: case HT::SetHiddenHead: case HT::SetDrop: case HT::PlDrop: case HT::TimerWheel: case HT::TimerShow: case HT::SuggestInfo: return false;
     default: return true;
     }
@@ -8503,7 +8778,7 @@ static void OnKeyDown(WPARAM vk) {
         else if (g.view == View::Music && g.query.empty() && g.libTab != 0) { g.libTab = 0; g.scroll = 0; Refresh(); }
         else if (!g.query.empty()) { g.query.clear(); OnQueryChanged(); }
         else if (g.view == View::MusicList || g.view == View::MusicSettings) ShowView(View::Music);
-        else if (g.view == View::Folder || g.view == View::Settings || g.view == View::Music || g.view == View::AllApps || g.view == View::Calendar || g.view == View::Storage || g.view == View::Chat || g.view == View::Timer || g.view == View::Suggest) {
+        else if (g.view == View::Folder || g.view == View::Settings || g.view == View::Music || g.view == View::AllApps || g.view == View::Calendar || g.view == View::Storage || g.view == View::Chat || g.view == View::Timer || g.view == View::Suggest || g.view == View::Todo) {
             if (g.view == View::Suggest && g.showSearch) { ShowView(View::Music); return; }
             if (!g.appsOn && g.view == View::Music) CloseBar(L"Esc");
             else ShowView(View::Folders);
@@ -8516,6 +8791,16 @@ static void OnKeyDown(WPARAM vk) {
             Music_UpdateMeta(g.editId, g.editTitle, g.editArtist);
             BuildMusic();
             LeaveSongEdit();
+        } else if (g.view == View::Todo) {
+            std::wstring t = g.query;
+            while (!t.empty() && t.front() == L' ') t.erase(0, 1);
+            if (!t.empty()) {
+                if (!g.todoLoaded) LoadTodos();
+                g.todos.insert(g.todos.begin(), {false, t});
+                SaveTodos();
+                g.query.clear();
+                Refresh();
+            }
         } else if (g.view == View::Music || (g.view == View::Suggest && g.showSearch)) {
             std::wstring u = g.query;
             if (!u.empty()) {
@@ -8699,6 +8984,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 bool c = g.battCharging, inet = g.netInternet;
                 RefreshStatus();
                 if (n != g.net || nb != g.netBars || b != g.batt || c != g.battCharging || inet != g.netInternet) Refresh();
+            }
+            if (g.previewing >= 0 && !Music_PreviewActive()) {  // von einem eigenen Song abgelöst
+                g.previewing = -1;
+                if (g.open && !g.closing) Render();
             }
             // Fortschritt des eigenen Players
             PlayerState ps = Player_State();
@@ -9267,6 +9556,13 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_APP_UPDATE:  // HoverBar-Update: neuer Stand
         if (g.open && !g.closing && g.view == View::Settings) Render();
         return 0;
+    case WM_APP_ICAL: {
+        auto* data = (std::string*)lp;
+        ApplyIcal(*data);
+        delete data;
+        if (g.open && !g.closing && g.view == View::Calendar) Refresh();
+        return 0;
+    }
     case WM_APP_PLUGIN:  // Erweiterung: Fortschritt / fertig
         if (g.open && !g.closing) Refresh();
         return 0;
@@ -9431,6 +9727,26 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             return 0;
         }
+        if (g.navDrag >= 0) {
+            if (std::abs((int)pt.y - g.navDragY) > S(6)) g.navMoved = true;
+            if (!g.navMoved) return 0;
+            for (auto& h : g.hits) {
+                if (h.type != HT::Nav || h.idx == g.navDrag || pt.y < h.rc.top || pt.y >= h.rc.bottom) continue;
+                std::vector<int> order = NavPages();
+                auto from = std::find(order.begin(), order.end(), g.navDrag), to = std::find(order.begin(), order.end(), h.idx);
+                if (from == order.end() || to == order.end()) break;
+                size_t target = to - order.begin();
+                order.erase(from);
+                order.insert(order.begin() + target, g.navDrag);
+                for (int page : g.navOrder)  // gerade ausgeblendete Seiten behalten ihren Platz hinten
+                    if (std::find(order.begin(), order.end(), page) == order.end()) order.push_back(page);
+                g.navOrder = order;
+                Layout();
+                Render();
+                break;
+            }
+            return 0;
+        }
         static POINT lastPt = {-1, -1};  // nur echte Mausbewegung beendet die Tastatur-Markierung
         if (pt.x == lastPt.x && pt.y == lastPt.y) return 0;
         lastPt = pt;
@@ -9454,6 +9770,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
     case WM_CAPTURECHANGED:
+        if ((HWND)lp != hwnd) g.navDrag = -1;
         if ((HWND)lp != hwnd && g.wheelDrag >= 0) { SnapWheel(g.wheelDrag); g.wheelDrag = -1; Render(); }
         if ((HWND)lp != hwnd) g.textDrag = false;
         if (g.dragCand && (HWND)lp != hwnd) { EndDrag(); Render(); }
@@ -9472,6 +9789,14 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_LBUTTONDOWN: {
         POINT pt = {GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
         g.pressed = HitTest(pt);
+        if (g.pressed >= 0 && g.hits[g.pressed].type == HT::Nav) {  // klicken = öffnen, ziehen = umsortieren
+            g.navDrag = g.hits[g.pressed].idx;
+            g.navDragY = pt.y;
+            g.navMoved = false;
+            g.pressed = -1;
+            SetCapture(hwnd);
+            return 0;
+        }
         if (g.pressed >= 0 && g.hits[g.pressed].type == HT::TimerWheel) {
             g.wheelDrag = g.hits[g.pressed].idx;
             g.wheelY = pt.y;
@@ -9552,6 +9877,20 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
     case WM_LBUTTONUP: {
         POINT pt = {GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+        if (g.navDrag >= 0) {
+            int page = g.navDrag;
+            g.navDrag = -1;
+            ReleaseCapture();
+            if (!g.navMoved) {
+                int hit = HitTest(pt);
+                if (hit >= 0 && g.hits[hit].type == HT::Nav && g.hits[hit].idx == page) Activate(hit, false);
+            } else {
+                std::wstring order;
+                for (int p : g.navOrder) order += (order.empty() ? L"" : L",") + std::to_wstring(p);
+                IniSet(L"Einstellungen", L"Leiste", order.c_str());
+            }
+            return 0;
+        }
         if (g.wheelDrag >= 0) {
             int i = g.wheelDrag;
             g.wheelDrag = -1;

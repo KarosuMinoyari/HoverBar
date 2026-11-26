@@ -108,8 +108,10 @@ void Music_AddSearch(const std::wstring& artist, const std::wstring& name, int s
 // Spotify-Export (CSV, z. B. von Exportify): fehlende Titel laden, vorhandene nur in die Playlist legen; Anzahl Titel, -1 = Datei nicht lesbar
 int Music_ImportCsv(const std::wstring& file, int& downloads);
 // ---- Vorschläge (Deezer): ähnliche Künstler zu den meistgehörten; Ergebnis als MUSIC_SUGGEST (lParam = std::vector<Suggestion>*, Empfänger löscht)
-struct Suggestion { std::wstring artist, title, preview; int seconds = 0; bool added = false; std::wstring url; };  // url: YouTube-Treffer
+struct Suggestion { std::wstring artist, title, preview; int seconds = 0; bool added = false; std::wstring url; std::wstring cover; };  // cover: Albumbild der Hörprobe (lokale Datei)  // url: YouTube-Treffer
 void Music_Suggest();
+bool Music_PreviewActive();                               // läuft gerade eine Hörprobe?
+std::string Net_Get(const std::wstring& url);             // einfacher HTTPS-Abruf (blockiert)
 void Music_Search(const std::wstring& query);             // YouTube durchsuchen (braucht yt-dlp)
 void Music_AddToPlaylist(const std::wstring& name, const std::wstring& id);  // Playlist anlegen, falls es sie nicht gibt
 void Music_PlayPreview(const std::wstring& url);           // 30-s-Hörprobe; leer = stoppen

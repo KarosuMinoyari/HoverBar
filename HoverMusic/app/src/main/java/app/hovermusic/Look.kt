@@ -65,6 +65,7 @@ data class Look(
     val tileCovers: Boolean = true,
     val lines: Boolean = true,
     val coverBackdrop: Boolean = true,
+    val suggestCovers: Boolean = true,  // Albumbilder bei den Vorschlägen
 ) {
     val fontFamily: FontFamily get() = listOf(FontFamily.Default, FontFamily.Serif, FontFamily.Monospace, FontFamily.Cursive)[font.coerceIn(0, 3)]
     val millis: Int get() = listOf(600, 300, 150, 0)[speed.coerceIn(0, 3)]
@@ -89,7 +90,7 @@ data class Look(
         ctx.getSharedPreferences("look", Context.MODE_PRIVATE).edit()
             .putInt("accent", accent).putString("image", image).putFloat("strength", imageStrength).putBoolean("blur", blur)
             .putInt("font", font).putBoolean("bold", bold).putInt("speed", speed).putBoolean("tiles", tileCovers)
-            .putBoolean("lines", lines).putBoolean("backdrop", coverBackdrop).apply()
+            .putBoolean("lines", lines).putBoolean("backdrop", coverBackdrop).putBoolean("suggestCovers", suggestCovers).apply()
     }
 
     companion object {
@@ -101,7 +102,7 @@ data class Look(
             return Look(
                 p.getInt("accent", d.accent), p.getString("image", "") ?: "", p.getFloat("strength", d.imageStrength), p.getBoolean("blur", d.blur),
                 p.getInt("font", d.font), p.getBoolean("bold", d.bold), p.getInt("speed", d.speed), p.getBoolean("tiles", d.tileCovers),
-                p.getBoolean("lines", d.lines), p.getBoolean("backdrop", d.coverBackdrop),
+                p.getBoolean("lines", d.lines), p.getBoolean("backdrop", d.coverBackdrop), p.getBoolean("suggestCovers", true),
             )
         }
     }
@@ -192,6 +193,7 @@ fun SettingsScreen(vm: MusicViewModel, onClose: () -> Unit, onPickFolder: () -> 
         Toggle("Cover in den Kacheln", look.tileCovers) { vm.setLook(look.copy(tileCovers = it)) }
         Toggle("Trennlinien zwischen Songs", look.lines) { vm.setLook(look.copy(lines = it)) }
         Toggle("Cover als Hintergrund bei „Läuft gerade“", look.coverBackdrop) { vm.setLook(look.copy(coverBackdrop = it)) }
+        Toggle("Album-Cover bei den Vorschlägen", look.suggestCovers) { vm.setLook(look.copy(suggestCovers = it)) }
 
         Head("App")
         Text("Version ${Updater.installed(ctx)}")

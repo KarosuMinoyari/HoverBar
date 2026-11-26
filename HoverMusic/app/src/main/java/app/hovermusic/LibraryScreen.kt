@@ -69,7 +69,7 @@ fun Cover(song: Song?, size: androidx.compose.ui.unit.Dp?, modifier: Modifier = 
 }
 
 @Composable
-fun LibraryScreen(vm: MusicViewModel, onOpenNow: () -> Unit, onSettings: () -> Unit, onPickFolder: () -> Unit) {
+fun LibraryScreen(vm: MusicViewModel, onOpenNow: () -> Unit, onSettings: () -> Unit, onPickFolder: () -> Unit, onSuggest: () -> Unit) {
     val library by vm.library.collectAsState()
     val loading by vm.loading.collectAsState()
     val error by vm.error.collectAsState()
@@ -96,6 +96,7 @@ fun LibraryScreen(vm: MusicViewModel, onOpenNow: () -> Unit, onSettings: () -> U
                 Text("Bibliothek", fontSize = 32.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onBackground)
                 Text("${library?.songs?.size ?: 0} Songs", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
+            IconButton(onClick = onSuggest) { Icon(HmIcons.Star, "Vorschläge", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
             IconButton(onClick = { showHelp = true }) { Icon(HmIcons.Download, "Von YouTube laden", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
             IconButton(onClick = { vm.refresh() }) { Icon(HmIcons.Refresh, "Aktualisieren", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
             IconButton(onClick = onSettings) { Icon(HmIcons.Gear, "Einstellungen", tint = MaterialTheme.colorScheme.onSurfaceVariant) }

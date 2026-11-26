@@ -39,6 +39,40 @@ object Downloader {
         if (p.size == 4 && p[0].length == 11) Found(p[0], p[3], p[2], p[1].toDoubleOrNull()?.toInt() ?: 0) else null
     }.toList()
 
+    /** Vorschlag -> gefundene Video-ID ("" = wird noch gesucht). */
+    val matched = MutableStateFlow<Map<String, String>>(emptyMap())
+
+    /** Wie am PC: nur ein Video, dessen Länge höchstens 5 s abweicht. */
+    fun pickByDuration(hits: List<Found>, seconds: Int): Found? =
+        if (seconds <= 0) hits.firstOrNull() else hits.firstOrNull { it.seconds > 0 && kotlin.math.abs(it.seconds - seconds) <= 5 }
+
+    fun downloadMatch(ctx: Context, idea: Idea) {
+        val app = ctx.applicationContext
+        if (idea.preview in matched.value) return
+        matched.value = matched.value + (idea.preview to "")
+        scope.launch {
+            var found: Found? = null
+            mutex.withLock {
+                try {
+                    init(app, false)
+                    val request = YoutubeDLRequest("ytsearch10:${idea.artist} ${idea.title}")
+                    request.addOption("--flat-playlist")
+                    request.addOption("--print", "%(id)s|%(duration)s|%(channel)s|%(title)s")
+                    found = pickByDuration(parseSearch(YoutubeDL.getInstance().execute(request, null, null).out), idea.seconds)
+                    if (found == null) status.value = "Kein Video mit passender Länge (±5 s) für „${idea.title}“."
+                } catch (e: Throwable) {
+                    status.value = "Suche fehlgeschlagen (Internet?)."
+                }
+            }
+            val f = found
+            if (f == null) matched.value = matched.value - idea.preview
+            else {
+                matched.value = matched.value + (idea.preview to f.id)
+                download(app, "https://youtu.be/${f.id}", toast = true)
+            }
+        }
+    }
+
     fun search(ctx: Context, query: String) {
         val app = ctx.applicationContext
         if (query.isBlank() || searching.value) return

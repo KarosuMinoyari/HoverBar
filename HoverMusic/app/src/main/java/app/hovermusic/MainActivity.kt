@@ -97,6 +97,7 @@ private fun App(vm: MusicViewModel) {
     val hasFolder by vm.hasFolder.collectAsState()
     val showNow by vm.showNow.collectAsState()
     var showSettings by remember { mutableStateOf(false) }
+    var showSuggest by remember { mutableStateOf(false) }
     val look = vm.look.value
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
@@ -113,7 +114,8 @@ private fun App(vm: MusicViewModel) {
         if (!hasFolder) {
             SetupScreen(vm, onPick = { picker.launch(null) })
         } else {
-            LibraryScreen(vm, onOpenNow = { vm.showNow.value = true }, onSettings = { showSettings = true }, onPickFolder = { picker.launch(null) })
+            LibraryScreen(vm, onOpenNow = { vm.showNow.value = true }, onSettings = { showSettings = true }, onPickFolder = { picker.launch(null) }, onSuggest = { showSuggest = true })
+            if (showSuggest) SuggestScreen(vm, onClose = { showSuggest = false })
             AnimatedVisibility(
                 visible = showNow,
                 enter = slideInVertically(tween(look.millis), initialOffsetY = { it }),

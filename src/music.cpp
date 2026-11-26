@@ -8,6 +8,8 @@
 #include <propkey.h>
 #include <shlwapi.h>
 #include <urlmon.h>
+#include <wininet.h>
+#pragma comment(lib, "wininet.lib")
 #include <wincodec.h>
 #include <mfapi.h>
 #include <mfidl.h>
@@ -183,7 +185,7 @@ static std::wstring YoutubeId(const std::wstring& url) {
 }
 
 // Text einer Webadresse holen (für die Cover-Suche)
-static std::string HttpGet(const std::wstring& url) {
+static std::string HttpGet(const std::wstring& url, size_t max = 4 * 1024 * 1024) {
     std::string out;
     IStream* st = nullptr;
     if (FAILED(URLOpenBlockingStreamW(nullptr, url.c_str(), &st, 0, nullptr))) return out;
@@ -191,7 +193,7 @@ static std::string HttpGet(const std::wstring& url) {
     ULONG got = 0;
     while (SUCCEEDED(st->Read(buf, sizeof(buf), &got)) && got > 0) {
         out.append(buf, got);
-        if (out.size() > 4 * 1024 * 1024) break;
+        if (out.size() > max) break;
     }
     st->Release();
     return out;
@@ -1268,6 +1270,7 @@ static std::wstring FileUri(const std::wstring& path) {
 }
 
 void Player_Play(const std::vector<std::wstring>& ids, int start) {
+    Music_PlayPreview(L"");  // eigener Song geht vor: Hörprobe aus
     try {
         if (!g_player) {
             g_player = wmp::MediaPlayer();
@@ -1381,6 +1384,7 @@ void Player_Preview(const std::wstring& id, double from, double to) {
 }
 
 void Player_Toggle() {
+    Music_PlayPreview(L"");  // eigener Song geht vor: Hörprobe aus
     if (!g_player) return;
     try {
         if (g_player.PlaybackSession().PlaybackState() == wmp::MediaPlaybackState::Playing) g_player.Pause();
@@ -1390,10 +1394,14 @@ void Player_Toggle() {
 }
 
 void Player_Next() {
+    Music_PlayPreview(L"");
+   
     try { if (g_list) g_list.MoveNext(); } catch (...) {}
 }
 
 void Player_Prev() {
+    Music_PlayPreview(L"");
+   
     try {
         if (!g_player || !g_list) return;
         // wie bei jedem Player: nach 3 Sekunden springt "Zurück" an den Anfang des Songs
@@ -2204,10 +2212,15 @@ static DWORD WINAPI SuggestThread(LPVOID pp) {
             s.title = JsonField(t, "title");
             s.artist = a == std::string::npos ? L"" : JsonField(t.substr(a), "name");
             s.preview = JsonField(t, "preview");
+            std::wstring image = JsonField(t, "cover_medium");  // erstes Vorkommen: das Album des Titels
             s.seconds = (int)JsonNumber(t, "duration");
             std::wstring key = LowerText(s.title);
             if (s.title.empty() || s.preview.rfind(L"https://", 0) != 0 || std::find(seen.begin(), seen.end(), key) != seen.end()) continue;
             seen.push_back(key);
+            if (image.rfind(L"https://", 0) == 0) {
+                std::wstring file = TempDir() + L"\\idee_" + std::to_wstring(GetTickCount64()) + L"_" + std::to_wstring(out->size()) + L".jpg";
+                if (SUCCEEDED(URLDownloadToFileW(nullptr, image.c_str(), file.c_str(), 0, nullptr))) s.cover = file;
+            }
             out->push_back(s);
             if (!--take) break;
         }
@@ -2241,6 +2254,7 @@ void Music_Suggest() {
     else delete p;
 }
 static wmp::MediaPlayer g_preview{nullptr};
+bool Music_PreviewActive() { return g_preview != nullptr; }
 void Music_PlayPreview(const std::wstring& url) {
     try {
         if (g_preview) g_preview.Pause();
@@ -2286,4 +2300,12 @@ void Music_Search(const std::wstring& query) {
     HANDLE t = CreateThread(nullptr, 0, SearchThread, q, 0, nullptr);
     if (t) CloseHandle(t);
     else delete q;
+}
+
+// Für den Kalender: nie die alte Kopie aus dem Windows-Zwischenspeicher, und die geheime Adresse dort nicht liegen lassen
+std::string Net_Get(const std::wstring& url) {
+    DeleteUrlCacheEntryW(url.c_str());
+    std::string out = HttpGet(url, 32 * 1024 * 1024);
+    DeleteUrlCacheEntryW(url.c_str());
+    return out;
 }

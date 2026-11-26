@@ -1,6 +1,14 @@
 package app.hovermusic
 
 import android.content.Context
+import android.content.res.ColorStateList
+import android.text.InputType
+import android.widget.EditText
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.widget.doAfterTextChanged
 import android.net.Uri
 import android.provider.DocumentsContract
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -30,7 +38,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -175,6 +182,32 @@ object Edits {
     }
 }
 
+/**
+ * Eingabefeld von Android selbst: Wörter und beliebige Zeichenfolgen lassen sich wie gewohnt markieren, kopieren und ersetzen
+ * (im Compose-Feld ging das in diesem Fenster nicht).
+ */
+@Composable
+private fun NativeField(label: String, value: String, onChange: (String) -> Unit) {
+    val color = MaterialTheme.colorScheme.onSurface.toArgb()
+    val accent = MaterialTheme.colorScheme.primary.toArgb()
+    val change by rememberUpdatedState(onChange)
+    Text(label, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    AndroidView(
+        modifier = Modifier.fillMaxWidth(),
+        factory = { ctx ->
+            EditText(ctx).apply {
+                setText(value)
+                setSingleLine()
+                inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_WORDS
+                setTextColor(color)
+                backgroundTintList = ColorStateList.valueOf(accent)
+                highlightColor = (accent and 0x00FFFFFF) or 0x66000000
+                doAfterTextChanged { change(it?.toString().orEmpty()) }
+            }
+        },
+    )
+}
+
 @Composable
 fun EditDialog(vm: MusicViewModel, song: Song, onClose: () -> Unit) {
     var title by remember(song.id) { mutableStateOf(song.title) }
@@ -208,8 +241,8 @@ fun EditDialog(vm: MusicViewModel, song: Song, onClose: () -> Unit) {
         title = { Text("Song bearbeiten") },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
-                OutlinedTextField(title, { title = it }, label = { Text("Titel") }, singleLine = true)
-                OutlinedTextField(artist, { artist = it }, label = { Text("Künstler") }, singleLine = true)
+                NativeField("Titel", title) { title = it }
+                NativeField("Künstler", artist) { artist = it }
                 TextButton(onClick = { picker.launch("image/*") }) { Text(if (cover == null) "Cover vom Handy" else "Neues Cover gewählt ✓") }
                 TextButton(onClick = {
                     searchText = "Suche …"

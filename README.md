@@ -27,9 +27,13 @@ Die Symbole sind unten angeheftet. Mit dem Mausrad über der Leiste blätterst d
 | Claude | Optionale Erweiterung (Zahnrad → Erweiterungen → *Hinzufügen*). claude.ai eingebettet (WebView2), Anmeldung bleibt gespeichert, der Speicher wird beim Schließen freigegeben. *Entfernen* löscht auch die gespeicherte Anmeldung. |
 | Timer | Optionale Erweiterung (Zahnrad → Erweiterungen). Stunden, Minuten, Sekunden über Ziffernräder (ziehen oder Mausrad), eigener Klingelton (MP3/WAV/M4A). Läuft bei geschlossener Leiste weiter, weckt den PC aber nicht aus dem Ruhezustand. |
 | Vorschläge | Optionale Erweiterung. Songs ähnlicher Künstler zu deinen meistgehörten (Deezer, ohne Konto; übertragen werden nur Künstlernamen). Klick = 30-s-Hörprobe, Pfeil = laden. |
+| Kalender | Erweiterung (wer ihn schon hatte, behält ihn). **Google Kalender:** unten „verbinden“, vorher die private iCal-Adresse kopieren (Kalender-Einstellungen → Kalender integrieren). Nur lesen; die Adresse bleibt auf diesem PC. |
+| To-do | Optionale Erweiterung: Aufgaben eintippen, abhaken, löschen. Liegt lokal in `todo.txt`. |
 | Speicher | Nur mit der optionalen Erweiterung WizTree (Zahnrad → Erweiterungen). Laufwerke und größte Apps. |
 
 Unter Funktionen → *HoverBar* lassen sich **Home (Apps)** und **Kalender** einzeln ausschalten. Ohne Home startet HoverBar in der Musik-Bibliothek (Speicher ist dann auch ausgeblendet); sind beide aus, ist es nur noch Musik-Player. Erweiterungen entfernst du im Reiter *Erweiterungen*.
+
+Die Symbole der linken Leiste lassen sich mit der Maus ziehen und so umsortieren.
 
 ## Apps
 
@@ -86,6 +90,7 @@ Eigene App im Ordner `HoverMusic/` (Kotlin, Jetpack Compose, Media3), mit eigene
 - **Einrichten:** In HoverBar am PC *Musik-Sync* einrichten, am Ende erscheint der QR-Code. In HoverMusic „QR-Code scannen“ (nutzt den Code-Scanner der Google Play-Dienste, ohne Kamera-Berechtigung; alternativ „Link aus der Zwischenablage“): Die App führt durch die Installation der Cloud-App auf dem Handy und die Wahl des Ordners `HoverBar-Musik` (Android-Ordnerauswahl: Google Drive, OneDrive, MEGA, Koofr … erscheinen dort). Es werden keine Zugangsdaten und keine Cloud-Schnittstellen gebraucht, die App liest nur diesen Ordner.
 - **Funktionen:** Alle Songs, Favoriten, Playlists, Zuletzt gespielt; „Läuft gerade“ mit großem Cover, Fortschritt, Zurück/Play/Weiter, Zufall/Wiederholen (jeder Klick wechselt: aus → Zufall → Playlist wiederholen → Song wiederholen), Herz; Songtext mit Mitscrollen (Tippen auf eine Zeile springt dorthin, nach 2 s geht es zur aktuellen Zeile zurück); Wiedergabe im Hintergrund mit Steuerung in der Benachrichtigung und auf dem Sperrbildschirm.
 - **Zu Playlists hinzufügen:** In der Playlist auf das runde + tippen und Songs wählen; HoverBar übernimmt das beim nächsten Öffnen.
+- **Vorschläge:** Stern oben: Songs ähnlicher Künstler mit 30-s-Hörprobe, Laden mit passender Länge; Album-Cover abschaltbar.
 - **Suchen:** Feld oben in der Bibliothek, Treffer antippen lädt den Song.
 - **Von YouTube laden:** In YouTube auf *Teilen* → HoverMusic. yt-dlp wird beim ersten Start in der neuesten Version geholt (Aktualisieren über das Download-Symbol). Beim nächsten Öffnen der App wandert eine Kopie in den Cloud-Ordner; am PC liest sie der Knopf ⟳ neben „Meistgespielt“ ein (ein Balken darunter läuft, solange noch Dateien ankommen) (braucht Schreibrecht: bei älterer Einrichtung den Ordner neu wählen).
 - **Meistgespielt:** „Alle Songs“ lässt sich nach Wiedergaben sortieren (Zahl vom PC plus die auf dem Handy).
