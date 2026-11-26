@@ -99,6 +99,10 @@ object LibraryLoader {
                 s.copy(title = e.title.ifEmpty { s.title }, artist = e.artist, coverUri = covers[e.cover] ?: s.coverUri, cuts = e.cuts)
             })
         }
+        files[Edits.PLAYLIST_FILE]?.let { u ->
+            val added = Edits.parsePlaylists(cr.openInputStream(u)?.use { it.readBytes().toString(Charsets.UTF_8) } ?: "")
+            library = library.copy(playlists = library.playlists.map { p -> Playlist(p.name, (p.songIds + added[p.name].orEmpty()).distinct()) })
+        }
         return Loaded(library, text, baseId)
     }
 

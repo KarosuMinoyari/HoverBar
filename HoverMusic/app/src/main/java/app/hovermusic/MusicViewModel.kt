@@ -173,6 +173,22 @@ class MusicViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun addToPlaylist(name: String, ids: List<String>) {
+        val ctx = getApplication<Application>()
+        if (ids.isEmpty()) return
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    Edits.addToPlaylist(ctx, Uri.parse(prefs.treeUri), folderId ?: error("Bibliothek zuerst aktualisieren"), name, ids)
+                }
+                cloud = cloud?.let { l -> l.copy(playlists = l.playlists.map { if (it.name == name) Playlist(name, (it.songIds + ids).distinct()) else it }) }
+                publish()
+            } catch (e: Exception) {
+                error.value = "Nicht hinzugefügt (${e.message}). Wähle den Musikordner in den Einstellungen neu, damit die App schreiben darf."
+            }
+        }
+    }
+
     fun deleteSong(s: Song) {
         val ctx = getApplication<Application>()
         viewModelScope.launch {

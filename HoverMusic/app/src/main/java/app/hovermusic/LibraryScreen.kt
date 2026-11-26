@@ -149,7 +149,12 @@ fun LibraryScreen(vm: MusicViewModel, onOpenNow: () -> Unit, onSettings: () -> U
                 tab == 2 -> {
                     val pl = lib.playlists.firstOrNull { it.name == openPlaylist }
                     val songs = pl?.let { vm.songs(it.songIds) } ?: emptyList()
-                    SongList(vm, pl?.name ?: "", songs, currentId, favorites, emptyText = "Diese Playlist ist leer.")
+                    var adding by remember { mutableStateOf(false) }
+                    SongList(vm, pl?.name ?: "", songs, currentId, favorites, emptyText = "Diese Playlist ist leer.", onAdd = { adding = true })
+                    if (adding && pl != null) AddSongsDialog(lib.songs.filter { !it.id.startsWith("yt:") && it.id !in pl.songIds }, onClose = { adding = false }) {
+                        vm.addToPlaylist(pl.name, it)
+                        adding = false
+                    }
                 }
                 else -> {
                     // Reihenfolge nur beim Umschalten oder neuer Bibliothek neu, nicht bei jedem Songwechsel
@@ -204,6 +209,36 @@ private fun SearchResults(hits: List<Found>, searching: Boolean, onPick: (Found)
 }
 
 @Composable
+private fun AddSongsDialog(candidates: List<Song>, onClose: () -> Unit, onAdd: (List<String>) -> Unit) {
+    var chosen by remember { mutableStateOf(setOf<String>()) }
+    val sorted = remember(candidates) { candidates.sortedBy { it.title.lowercase() } }
+    AlertDialog(
+        onDismissRequest = onClose,
+        title = { Text("Songs hinzufügen") },
+        text = {
+            if (sorted.isEmpty()) Text("Alle Songs sind schon in dieser Playlist.")
+            else LazyColumn(Modifier.heightIn(max = 420.dp)) {
+                itemsIndexed(sorted, key = { _, s -> s.id }) { _, s ->
+                    val on = s.id in chosen
+                    Row(Modifier.fillMaxWidth().clickable { chosen = if (on) chosen - s.id else chosen + s.id }.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        androidx.compose.material3.Checkbox(checked = on, onCheckedChange = null)
+                        Spacer(Modifier.width(10.dp))
+                        Cover(s, 40.dp, radius = 10)
+                        Spacer(Modifier.width(10.dp))
+                        Column {
+                            Text(s.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 15.sp)
+                            Text(s.artist, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = { onAdd(chosen.toList()) }, enabled = chosen.isNotEmpty()) { Text("Hinzufügen (${chosen.size})") } },
+        dismissButton = { TextButton(onClick = onClose) { Text("Abbrechen") } },
+    )
+}
+
+@Composable
 private fun Tile(name: String, icon: ImageVector, tint: Color, selected: Boolean, cover: android.net.Uri?, modifier: Modifier, onClick: () -> Unit) {
     Box(
         modifier.clip(RoundedCornerShape(18.dp))
@@ -243,7 +278,7 @@ private fun PlaylistList(vm: MusicViewModel, lib: Library, onOpen: (String) -> U
 @Composable
 private fun SongList(
     vm: MusicViewModel, title: String, songs: List<Song>, currentId: String?, favorites: List<String>,
-    emptyText: String, sortable: Boolean = false, playsTick: Int = 0,
+    emptyText: String, sortable: Boolean = false, playsTick: Int = 0, onAdd: (() -> Unit)? = null,
 ) {
     val byPlays by vm.sortByPlays.collectAsState()
     var editing by remember { mutableStateOf<Song?>(null) }
@@ -258,6 +293,12 @@ private fun SongList(
                         modifier = Modifier.clip(CircleShape).background(MaterialTheme.colorScheme.surfaceVariant)
                             .clickable { vm.toggleSort() }.heightIn(min = 40.dp).padding(horizontal = 16.dp, vertical = 11.dp),
                     )
+                    Spacer(Modifier.width(10.dp))
+                }
+                if (onAdd != null) {  // runder Plus-Knopf: Songs in die Playlist holen
+                    IconButton(onClick = onAdd, modifier = Modifier.size(48.dp).clip(CircleShape).background(MaterialTheme.colorScheme.surfaceVariant)) {
+                        Text("+", fontSize = 26.sp)
+                    }
                     Spacer(Modifier.width(10.dp))
                 }
                 if (songs.isNotEmpty()) {

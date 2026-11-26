@@ -2039,18 +2039,42 @@ unsigned long long Music_FolderState(bool& busy) {
     return state;
 }
 
+// HoverMusic-Playlists.txt, Zeilen "Playlist <Tab> Song-ID": am Handy zu einer Playlist hinzugefügt
+static bool ImportPhonePlaylists() {
+    std::wstring file = Music_Folder() + L"\\HoverMusic-Playlists.txt";
+    std::vector<BYTE> raw;
+    if (!ReadAll(file, raw) || raw.empty() || raw.size() > 1024 * 1024) return false;
+    std::wstring text = FromUtf8(std::string(raw.begin(), raw.end()));
+    bool changed = false;
+    for (size_t a = 0; a < text.size();) {
+        size_t b = text.find(L'\n', a);
+        if (b == std::wstring::npos) b = text.size();
+        std::wstring line = text.substr(a, b - a);
+        a = b + 1;
+        while (!line.empty() && line.back() == L'\r') line.pop_back();
+        size_t tab = line.find(L'\t');
+        if (tab == std::wstring::npos || !tab || Music_Find(line.substr(tab + 1)) < 0) continue;
+        Music_AddToPlaylist(line.substr(0, tab), line.substr(tab + 1));
+        changed = true;
+    }
+    if (changed) Music_Save();
+    DeleteFileW(file.c_str());
+    return changed;
+}
+
 // Zeilen: Song-ID <Tab> Titel <Tab> Künstler <Tab> Cover ("Cover/Name" oder leer) [<Tab> Schnitte, siehe unten]. Die Datei kommt aus der Cloud, also prüfen.
 bool Music_ImportEdits() {
     if (!g_syncExport) return false;
+    bool playlists = ImportPhonePlaylists();
     std::wstring dir = Music_Folder(), file = dir + L"\\HoverMusic-Aenderungen.txt";
     HANDLE h = CreateFileW(file.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
-    if (h == INVALID_HANDLE_VALUE) return false;
+    if (h == INVALID_HANDLE_VALUE) return playlists;
     DWORD sz = GetFileSize(h, nullptr), got = 0;
     std::string data(sz < 1024 * 1024 ? sz : 0, '\0');
     bool read = !data.empty() && ReadFile(h, &data[0], sz, &got, nullptr) && got == sz;
     CloseHandle(h);
-    if (!read) return false;
-    bool changed = false;
+    if (!read) return playlists;
+    bool changed = playlists;
     std::string waiting;  // Zeilen, die noch nicht gehen (Cover noch nicht heruntergeladen, Schnitt fehlgeschlagen)
     for (size_t a = 0; a < data.size();) {
         size_t b = data.find('\n', a);

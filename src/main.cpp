@@ -30,6 +30,7 @@
 #include "chat.h"
 #include "update.h"
 #include "qrcode.h"
+#include "popup.h"
 #include <wincrypt.h>
 #include <softpub.h>
 #include <wintrust.h>
@@ -525,6 +526,14 @@ struct State {
     UINT ctlKey[5] = {VK_HOME, VK_NEXT, VK_PRIOR, VK_OEM_PLUS, VK_OEM_MINUS};
     int ctlCapture = -1;                         // wartet auf die neue Taste für diese Funktion
     bool calendarOn = true;                      // Kalender-Seite
+    int glass = 50;                              // Glas-Stärke: 0 matt, 50 wie bisher, 100 wie bei Apple
+    int fontScale = 100, spacing = 100;          // Schriftgröße und Zeilenabstand in Prozent
+    int widthScale = 100, workW = 0;             // Breite der Leiste in Prozent; Breite des Arbeitsbereichs beim Öffnen
+    int killZone = 15, clickZone = 50;           // Schließzonen: linker Teil des Bildschirms in Prozent
+    bool clickClose = false, clickWide = false;  // zum Schließen klicken statt nur hinfahren; Klick auch außerhalb der Killzone
+    int zoneEdit = -1;                           // Eingabefeld in Bearbeitung (7 Killzone, 8 Klick-Killzone)
+    std::wstring zoneText;
+    bool mouseWasDown = false;
     bool suggestOn = false, suggestBusy = false, suggestDone = false;  // Erweiterung "Vorschläge"
     std::vector<Suggestion> suggestions;
     int previewing = -1;
@@ -653,6 +662,14 @@ static void InitIni() {
     g.musicOn = GetPrivateProfileIntW(L"Funktionen", L"MusikPlayer", 1, g.ini.c_str()) != 0;
     g.claudeOn = GetPrivateProfileIntW(L"Erweiterungen", L"Claude", 0, g.ini.c_str()) != 0;
     g.timerOn = GetPrivateProfileIntW(L"Erweiterungen", L"Timer", 0, g.ini.c_str()) != 0;
+    g.widthScale = std::max(70, std::min(160, (int)GetPrivateProfileIntW(L"Einstellungen", L"Breite", 100, g.ini.c_str())));
+    g.killZone = std::max(1, std::min(90, (int)GetPrivateProfileIntW(L"Einstellungen", L"Killzone", 15, g.ini.c_str())));
+    g.clickZone = std::max(1, std::min(100, (int)GetPrivateProfileIntW(L"Einstellungen", L"KlickKillzone", 50, g.ini.c_str())));
+    g.clickClose = GetPrivateProfileIntW(L"Einstellungen", L"KlickSchliessen", 0, g.ini.c_str()) != 0;
+    g.clickWide = GetPrivateProfileIntW(L"Einstellungen", L"KlickAuchAusserhalb", 0, g.ini.c_str()) != 0;
+    g.glass = std::max(0, std::min(100, (int)GetPrivateProfileIntW(L"Einstellungen", L"GlasStaerke", 50, g.ini.c_str())));
+    g.fontScale = std::max(80, std::min(140, (int)GetPrivateProfileIntW(L"Einstellungen", L"Schriftgroesse", 100, g.ini.c_str())));
+    g.spacing = std::max(80, std::min(160, (int)GetPrivateProfileIntW(L"Einstellungen", L"Zeilenabstand", 100, g.ini.c_str())));
     g.suggestOn = GetPrivateProfileIntW(L"Erweiterungen", L"Vorschlaege", 0, g.ini.c_str()) != 0;
     g.appsOn = GetPrivateProfileIntW(L"Funktionen", L"AppLauncher", 1, g.ini.c_str()) != 0;
     g.calendarOn = GetPrivateProfileIntW(L"Funktionen", L"Kalender", 1, g.ini.c_str()) != 0;
@@ -1466,7 +1483,7 @@ static bool ConfirmDeleteFolder(const std::wstring& name) {
     std::wstring msg = L"Ordner \u201E" + name + L"\u201C löschen?\n\nDie Apps darin werden automatisch neu einsortiert. "
                        L"Wenn du den Ordner später mit gleichem Namen neu anlegst, ist er wieder da.";
     g.menuOpen = true;
-    int r = MessageBoxW(g.hwnd, msg.c_str(), L"HoverBar", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2 | MB_TOPMOST);
+    int r = hb::Box(g.hwnd, msg.c_str(), L"HoverBar", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2 | MB_TOPMOST);
     g.menuOpen = false;
     SetForegroundWindow(g.hwnd);
     return r == IDYES;
@@ -1510,9 +1527,11 @@ static void UpdateAllList() {
         if (q.empty() || g.apps[i].low.find(q) != std::wstring::npos) g.allList.push_back(i);
 }
 
+// Zeilenhöhe mit eingestelltem Abstand; bei größerer Schrift wächst sie mit, damit nichts abgeschnitten wird
+static int RowH(int px) { return S(px) * g.spacing / 100 * std::max(100, g.fontScale) / 100; }
 static void LayoutDesign(int W, int pad, int y0) {
     int cw = W - 2 * pad, ip = S(8), headH = S(42), gap = S(12);
-    int rowH2 = S(48), labelW = S(140);
+    int rowH2 = RowH(48), labelW = S(140);
     auto row = [&](int& ry, int label) {
         RECT rr = {pad + ip, ry, pad + cw - ip, ry + rowH2};
         g.hits.push_back({rr, HT::SetRowLabel, label});
@@ -1528,13 +1547,14 @@ static void LayoutDesign(int W, int pad, int y0) {
     };
     int y = y0;
     {   // Aussehen
-        int rows = 6 + (g.blur ? 1 : 0) + (g.imgPath.empty() ? 0 : 1);
+        int rows = 6 + (g.blur ? 2 : 0) + (g.imgPath.empty() ? 0 : 1);
         int ch = headH + rows * rowH2 + ip;
         g.hits.push_back({{pad, y, pad + cw, y + ch}, HT::SetCard, -2, -2});
         g.hits.push_back({{pad, y, pad + cw, y + headH}, HT::SetSection, 0});
         int ry = y + headH;
         toggle(row(ry, 1), 0);                  // Glas-Effekt
         if (g.blur) slider(row(ry, 7), 2);      // Unschärfe
+        if (g.blur) slider(row(ry, 35), 4);     // Glas-Stärke
         slider(row(ry, 0), 0);                  // Transparenz / Tönung
         RECT r2 = row(ry, 2);                   // Farbe
         int d = S(24), step = S(31), x = r2.left + labelW;
@@ -1556,7 +1576,9 @@ static void LayoutDesign(int W, int pad, int y0) {
         int ry = y + headH;
         RECT r8 = row(ry, 8);  // Schriftart
         int bh = S(32), by = r8.top + (rowH2 - bh) / 2;
-        g.hits.push_back({{r8.left + labelW, by, r8.right - S(6), by + bh}, HT::SetButton, 2});
+        g.hits.push_back({{r8.left + labelW, by, r8.right - S(6) - 2 * S(70), by + bh}, HT::SetButton, 2});
+        g.hits.push_back({{r8.right - S(6) - 2 * S(70) + S(6), by, r8.right - S(6) - S(70), by + bh}, HT::SetButton, 4});  // Schriftgröße
+        g.hits.push_back({{r8.right - S(6) - S(70) + S(6), by, r8.right - S(6), by + bh}, HT::SetButton, 5});            // Zeilenabstand
         toggle(row(ry, 9), 3);  // fett
         RECT r10 = row(ry, 10);  // Ausfahren
         int sx = r10.left + labelW, sw = (r10.right - S(6) - sx) / 4;
@@ -1566,7 +1588,7 @@ static void LayoutDesign(int W, int pad, int y0) {
         y += ch + gap;
     }
     {   // Allgemein
-        int ch = headH + 3 * rowH2 + ip;
+        int ch = headH + (6 + (g.clickClose ? 1 + (g.clickWide ? 1 : 0) : 0)) * rowH2 + ip;
         g.hits.push_back({{pad, y, pad + cw, y + ch}, HT::SetCard, -3, -3});
         g.hits.push_back({{pad, y, pad + cw, y + headH}, HT::SetSection, 1});
         int ry = y + headH;
@@ -1575,6 +1597,19 @@ static void LayoutDesign(int W, int pad, int y0) {
         RECT r11 = row(ry, 11);  // Taste zum Öffnen
         int bh = S(32), by = r11.top + (rowH2 - bh) / 2;
         g.hits.push_back({{r11.left + labelW + S(40), by, r11.right - S(6), by + bh}, HT::SetButton, 3});
+        ry = r11.bottom;
+        RECT rw = row(ry, 36);  // Breite
+        g.hits.push_back({{rw.left + labelW + S(40), rw.top + (rowH2 - bh) / 2, rw.right - S(6), rw.top + (rowH2 + bh) / 2}, HT::SetButton, 6});
+        auto field = [&](int label, int id) {
+            RECT rr = row(ry, label);
+            g.hits.push_back({{rr.right - S(96), rr.top + (rowH2 - bh) / 2, rr.right - S(6), rr.top + (rowH2 + bh) / 2}, HT::SetButton, id});
+        };
+        field(37, 7);                    // Killzone
+        toggle(row(ry, 38), 24);         // zum Schließen klicken
+        if (g.clickClose) {
+            toggle(row(ry, 39), 25);     // auch außerhalb der Killzone
+            if (g.clickWide) field(40, 8);  // Klick-Killzone
+        }
         y += ch + gap;
     }
     g.contentH = y - y0;
@@ -1633,7 +1668,7 @@ static void LayoutSuggested(int W, int pad, int y0) {
 }
 
 static void LayoutFunctions(int W, int pad, int y0) {
-    int cw = W - 2 * pad, ip = S(8), headH = S(42), gap = S(12), rowH2 = S(58);
+    int cw = W - 2 * pad, ip = S(8), headH = S(42), gap = S(12), rowH2 = RowH(58);
     auto rowToggle = [&](int& ry, int label, int idx) {
         RECT rr = {pad + ip, ry, pad + cw - ip, ry + rowH2};
         g.hits.push_back({rr, HT::SetRowLabel, label});
@@ -1960,7 +1995,7 @@ static void LayoutMusic(int W, int pad, int y0) {
     }
     if (g.libTab == 2) {  // Playlists als Alben
         static const int albumH[] = {72, 88, 108};
-        int rowH = S(albumH[g.musicSize]);
+        int rowH = RowH(albumH[g.musicSize]);
         int npl = (int)Music_Playlists().size();
         for (int pl = 0; pl < npl; pl++) {
             g.hits.push_back({{pad, y, pad + cw, y + rowH}, HT::MAlbum, pl});
@@ -1972,7 +2007,7 @@ static void LayoutMusic(int W, int pad, int y0) {
         }
     } else {  // Songliste: alle (Standard), Favoriten oder zuletzt gespielt
         static const int songH[] = {54, 64, 80};
-        int rowH = S(songH[g.musicSize]);
+        int rowH = RowH(songH[g.musicSize]);
         int list = g.libTab == 1 ? -2 : g.libTab == 3 ? -3 : -1;
         const auto& items = MusicListItems(list);
         if (list == -1 && items.empty()) {  // leere Bibliothek: trotzdem neu einlesen können
@@ -2003,7 +2038,7 @@ static void LayoutMusic(int W, int pad, int y0) {
 // Songs einer Playlist (oder alle): gleiches Format wie die Alben, Cover etwas kleiner
 static void LayoutMusicList(int W, int pad, int y0) {
     static const int songH[] = {54, 64, 80};
-    int cw = W - 2 * pad, y = y0, rowH = S(songH[g.musicSize]);
+    int cw = W - 2 * pad, y = y0, rowH = RowH(songH[g.musicSize]);
     const auto& items = MusicListItems(g.curPlaylist);
     if (!items.empty()) {
         g.hits.push_back({{pad, y, pad + cw, y + S(44)}, HT::MPlayAll, g.curPlaylist});
@@ -2210,7 +2245,7 @@ static void LayoutTimer(int W, int pad) {
 }
 static void Message(const std::wstring& text) {
     g.menuOpen = true;
-    MessageBoxW(g.hwnd, text.c_str(), L"HoverBar", MB_OK | MB_ICONINFORMATION | MB_TOPMOST);
+    hb::Box(g.hwnd, text.c_str(), L"HoverBar", MB_OK | MB_ICONINFORMATION | MB_TOPMOST);
     g.menuOpen = false;
 }
 static void NeedTool() { Message(L"Dafür braucht HoverBar yt-dlp. Lade es unter Funktionen → yt-dlp herunter."); }
@@ -2284,7 +2319,7 @@ static void Layout() {
         int gap = S(12), ip = S(14), headH = S(30);
         int cw = W - 2 * pad;
         int cols = std::max(3, (cw - 2 * ip) / S(86));
-        int cellW = (cw - 2 * ip) / cols, cellH = S(86);
+        int cellW = (cw - 2 * ip) / cols, cellH = RowH(86);
         int y = y0;
         if (g.showRecent) {  // "Zuletzt genutzt": eine Reihe, erst nach starkem Hochscrollen sichtbar
             int rh = S(34) + cellH + S(8);
@@ -2363,7 +2398,7 @@ static void Layout() {
     } else if (g.view == View::SongEdit) {
         LayoutSongEdit(W, pad, y0);
     } else if (g.view == View::Suggest) {
-        int cw = W - 2 * pad, y = y0, rh = S(58);
+        int cw = W - 2 * pad, y = y0, rh = RowH(58);
         if (!g.showSearch) g.hits.push_back({{W - pad - S(110), S(60), W - pad, S(92)}, HT::SuggestReload, 0});
         if (SuggestBusy() || SuggestList().empty()) g.hits.push_back({{pad, y, pad + cw, y + S(60)}, HT::SuggestInfo, 0});
         else
@@ -2429,7 +2464,7 @@ static void Layout() {
         // alle Apps mit Größe: oben Sortierung, darunter Zeilen
         int sw = S(76), sx = W - pad - 3 * sw;
         for (int k = 0; k < 3; k++) g.hits.push_back({{sx + k * sw, S(60), sx + (k + 1) * sw, S(92)}, HT::SortBtn, k});
-        int y = y0, rowH = S(46);
+        int y = y0, rowH = RowH(46);
         for (auto& e : g.appSizes) {
             bool run = g.running.count(e.first) > 0;
             if (g.onlyRunning && !run) continue;
@@ -2442,7 +2477,7 @@ static void Layout() {
     } else if (g.view == View::Folder && FolderGameMode(g.folders[g.curFolder].name)) {
         // Spielmodus: Liste mit Größe, Spielzeit, zuletzt gespielt
         const auto& list = g.folders[g.curFolder].items;
-        int y = y0, rowH = S(62);
+        int y = y0, rowH = RowH(62);
         for (int i : list) {
             g.hits.push_back({{pad, y, W - pad, y + rowH}, HT::GameRow, i});
             y += rowH + S(2);
@@ -2451,7 +2486,7 @@ static void Layout() {
     } else {
         const std::vector<int>& list = g.view == View::Folder ? g.folders[g.curFolder].items : g.results;
         int cols = std::max(4, (W - 2 * pad) / S(96));
-        int cellW = (W - 2 * pad) / cols, cellH = S(104);
+        int cellW = (W - 2 * pad) / cols, cellH = RowH(104);
         for (int i = 0; i < (int)list.size(); i++) {
             int x = pad + (i % cols) * cellW, y = y0 + (i / cols) * cellH;
             g.hits.push_back({{x, y, x + cellW, y + cellH}, HT::Cell, list[i]});
@@ -3199,6 +3234,15 @@ static void DrawHit(HDC dc, const Hit& h, bool hot, int cardHot) {
             Text(dc, L"CSV-Export (z. B. Exportify)", b, g.fSmall, cDim, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS);
             break;
         }
+        if (h.idx >= 36 && h.idx <= 40) {
+            static const wchar_t* names[] = {L"Breite", L"Killzone (links)", L"Zum Schließen klicken", L"Klick auch außerhalb", L"Klick-Killzone"};
+            Text(dc, names[h.idx - 36], {h.rc.left + S(8), h.rc.top, h.rc.right - S(104), h.rc.bottom}, g.fText, cText, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+            break;
+        }
+        if (h.idx == 35) {
+            Text(dc, L"Glas-Stärke", {h.rc.left + S(8), h.rc.top, h.rc.left + S(140), h.rc.bottom}, g.fText, cText, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+            break;
+        }
         if (h.idx == 33) {
             Text(dc, L"Kalender", {h.rc.left + S(8), h.rc.top, h.rc.right - S(70), h.rc.bottom}, g.fText, cText, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
             break;
@@ -3317,7 +3361,7 @@ static void DrawHit(HDC dc, const Hit& h, bool hot, int cardHot) {
             }
             break;
         }
-        int v =h.idx == 0 ? (g.bgAlpha - 40) * 100 / 215 : h.idx == 1 ? g.imgStrength : h.idx == 3 ? g.volume : g.blurAmount;
+        int v =h.idx == 0 ? (g.bgAlpha - 40) * 100 / 215 : h.idx == 1 ? g.imgStrength : h.idx == 3 ? g.volume : h.idx == 4 ? g.glass : g.blurAmount;
         int cy = (h.rc.top + h.rc.bottom) / 2, kr = S(9);
         int x0 = h.rc.left + kr, x1 = h.rc.right - kr;
         int kx = x0 + (x1 - x0) * v / 100;
@@ -3332,7 +3376,7 @@ static void DrawHit(HDC dc, const Hit& h, bool hot, int cardHot) {
         bool on = h.idx == 0 ? g.blur : h.idx == 1 ? AutostartEnabled() : h.idx == 2 ? g.onlyDesktop : h.idx == 3 ? g.fontBold
                 : h.idx == 10 ? g.musicSrc == 0 : h.idx == 11 ? g.musicSrc == 1 : h.idx == 12 ? g.duckOn
                 : h.idx == 13 ? g.musicKeys : h.idx == 15 ? g.musicOn
-                : h.idx >= 16 && h.idx <= 19 ? Games_SourceOn(h.idx - 16) : h.idx == 20 ? g.tileCovers : h.idx == 21 ? g.songLines : h.idx == 22 ? g.appsOn : h.idx == 23 ? g.calendarOn : g.grabKey;
+                : h.idx >= 16 && h.idx <= 19 ? Games_SourceOn(h.idx - 16) : h.idx == 20 ? g.tileCovers : h.idx == 21 ? g.songLines : h.idx == 22 ? g.appsOn : h.idx == 23 ? g.calendarOn : h.idx == 24 ? g.clickClose : h.idx == 25 ? g.clickWide : g.grabKey;
         int th = h.rc.bottom - h.rc.top;
         FillRound(dc, h.rc, th, on ? cAccent : (hot ? cCardHot : cHover));
         int kr = th / 2 - S(4);
@@ -3386,6 +3430,24 @@ static void DrawHit(HDC dc, const Hit& h, bool hot, int cardHot) {
             FillRound(dc, h.rc, S(10), g.hotCapture ? cAccent : hot ? cHover : cSearch);
             Text(dc, g.hotCapture ? L"Taste drücken …  (Esc = keine)" : HotkeyName(g.hotVk, g.hotMods), h.rc, g.hotCapture ? g.fHead : g.fText, cText,
                  DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+            break;
+        }
+        if (h.idx == 6) {
+            FillRound(dc, h.rc, S(10), hot ? cHover : cSearch);
+            Text(dc, std::to_wstring(g.widthScale) + L" %", h.rc, g.fSmall, cText, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            break;
+        }
+        if (h.idx == 7 || h.idx == 8) {  // Eingabefeld in Prozent
+            bool edit = g.zoneEdit == h.idx;
+            FillRound(dc, h.rc, S(10), edit ? cAccent : hot ? cHover : cSearch);
+            std::wstring v = edit ? g.zoneText + L"▏" : std::to_wstring(h.idx == 7 ? g.killZone : g.clickZone);
+            Text(dc, v + L" %", h.rc, g.fText, cText, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            break;
+        }
+        if (h.idx == 4 || h.idx == 5) {
+            FillRound(dc, h.rc, S(10), hot ? cHover : cSearch);
+            Text(dc, std::wstring(h.idx == 4 ? L"Aa " : L"\u2195 ") + std::to_wstring(h.idx == 4 ? g.fontScale : g.spacing) + L"%", h.rc, g.fSmall, cText,
+                 DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             break;
         }
         if (h.idx == 2) {  // Schriftauswahl: Name in der eigenen Schrift
@@ -4834,13 +4896,16 @@ static void Compose(int W, int H) {
     float tr = GetRValue(g.tint), tg = GetGValue(g.tint), tb = GetBValue(g.tint);
     float tintA = 0.10f + 0.80f * (g.bgAlpha - 40) / 215.f;
     const float R = (float)S(18);
-    const float rim = (float)S(26), bend = (float)S(22);
+    const float t = glass ? (g.glass - 50) / 50.f : 0.f;
+    if (glass) tintA = t >= 0 ? tintA * (1 - 0.7f * t) : tintA + (1 - tintA) * 0.7f * -t;
+    const float rim = (float)S(26) * (1 + 0.5f * std::max(0.f, t)), bend = (float)S(22) * (1 + 0.9f * t);
+    const float vivid = 1 + 0.35f * t, shine = 1 + 0.7f * t;  // Sättigung und Glanzkante
     const float Lx = -0.7071f, Ly = -0.7071f;
 
     // Grundebene nur neu berechnen, wenn sich Größe oder Aussehen geändert hat
     wchar_t keyBuf[160];
-    wsprintfW(keyBuf, L"%d|%d|%d|%d|%d|%d|%d|%d|%d|%u|%d", W, H, glass, hasImg, g.bgAlpha, g.imgStrength, g.blurAmount,
-              g.xShown, g.y, (unsigned)g.tint, g.bdVersion);
+    wsprintfW(keyBuf, L"%d|%d|%d|%d|%d|%d|%d|%d|%d|%u|%d|%d", W, H, glass, hasImg, g.bgAlpha, g.imgStrength, g.blurAmount,
+              g.xShown, g.y, (unsigned)g.tint, g.bdVersion, g.glass);
     if (g.baseKey != keyBuf || g.basePx.size() != (size_t)W * H) {
     g.baseKey = keyBuf;
     g.basePx.resize((size_t)W * H);
@@ -4856,14 +4921,21 @@ static void Compose(int W, int H) {
                 if (dt < rim) ny += (1 - dt / rim) * (1 - dt / rim);
                 if (db < rim) ny -= (1 - db / rim) * (1 - db / rim);
                 SampleBackdrop((float)(g.xShown + x) + nx * bend, (float)(g.y + y) + ny * bend, r, gg, b);
+                {
+                    float l = 0.299f * r + 0.587f * gg + 0.114f * b;
+                    auto sat = [&](float c) { return std::max(0.f, std::min(255.f, l + (c - l) * vivid)); };
+                    r = sat(r);
+                    gg = sat(gg);
+                    b = sat(b);
+                }
                 r = r * (1 - tintA) + tr * tintA;
                 gg = gg * (1 - tintA) + tg * tintA;
                 b = b * (1 - tintA) + tb * tintA;
                 float len = std::sqrt(nx * nx + ny * ny);
                 float lf = len > 0.0001f ? std::fabs((-nx / len) * Lx + (-ny / len) * Ly) : 0.5f;
                 float spec = 0;
-                if (e < 1.6f) spec = 0.12f + 0.55f * lf;
-                else if (e < S(12)) spec = (0.03f + 0.14f * lf) * (1 - (e - 1.6f) / (S(12) - 1.6f));
+                if (e < 1.6f) spec = std::min(0.95f, (0.12f + 0.55f * lf) * shine);
+                else if (e < S(12)) spec = (0.03f + 0.14f * lf) * shine * (1 - (e - 1.6f) / (S(12) - 1.6f));
                 r += (255 - r) * spec; gg += (255 - gg) * spec; b += (255 - b) * spec;
                 a = 255;
             } else {
@@ -4931,13 +5003,15 @@ static void Compose(int W, int H) {
                 if (solid) {
                     nB = sb; nG = sg; nR = sr; nA = 255;
                 } else {
-                    float w = o.white, dk = o.dark;
+                    // klareres Glas: Flächen etwas zarter, ihre Lichtkante dafür deutlicher
+                    float w = o.white * (1 - 0.25f * std::max(0.f, t)), dk = o.dark;
                     if (glass && !inner) {
                         // Glaskante: oben Licht, unten leichter Schatten (Felder: eingelassen)
                         float band = std::max(0.f, std::min(1.f, d + 2.0f));
                         if (s.kind == State::SH_SEARCH) dk += band * std::max(0.f, vf) * 0.45f;
                         else {
-                            w += band * std::max(0.f, vf) * 0.35f;
+                            w += band * std::max(0.f, vf) * 0.35f * shine;
+                            w += band * std::max(0.f, t) * 0.18f;  // rundum heller Rand
                             dk += band * std::max(0.f, -vf) * 0.15f;
                         }
                     }
@@ -5198,10 +5272,12 @@ static void Refresh() {
 static void SetDpi(UINT dpi, bool force = false) {
     if (dpi == g.dpi && g.fText && !force) return;
     g.dpi = dpi;
+    hb::g_style = {g.fontName, dpi};  // Meldungen und Auswahlkästen in gleicher Schrift und Größe
     ClearTextCache();  // Schriften ändern sich
     for (HFONT* f : {&g.fTitle, &g.fText, &g.fHead, &g.fSmall, &g.fIcon, &g.fGlyph, &g.fGlyphL, &g.fBarTitle, &g.fLyric, &g.fNpTitle})
         if (*f) { DeleteObject(*f); *f = nullptr; }
     auto mk = [](int px, int weight) {
+        px = (px * g.fontScale + 50) / 100;
         if (g.fontBold) weight = std::min(900, weight + 200);  // "fette Schrift": alles eine Stufe kräftiger
         return CreateFontW(-S(px), 0, 0, 0, weight, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                            CLEARTYPE_NATURAL_QUALITY, DEFAULT_PITCH, g.fontName.c_str());
@@ -5433,6 +5509,7 @@ static void OpenBluetoothPanel() {
         ShellExecuteW(nullptr, L"open", L"ms-settings:bluetooth", nullptr, nullptr, SW_SHOWNORMAL);
 }
 
+static void CommitZone();  // weiter unten (Eingabefeld der Killzone)
 static void FinishClose() {
     // Ansicht merken (Seite, Ordner, Scrollstand, Suche): innerhalb von 10 s wieder öffnen -> alles noch da
     g.resume = {GetTickCount64(), g.view == View::SongEdit ? View::Music : g.view, g.curFolder, g.scroll, g.scrollR, g.libTab, g.setTab, g.curPlaylist,
@@ -5456,6 +5533,7 @@ static void FinishClose() {
     KillTimer(g.hwnd, T_RELOAD);  // beim nächsten Öffnen wird ohnehin neu gelesen
     g.reload = 0;
     g.ctlCapture = -1;
+    CommitZone();
     if (g.grabCapture) { g.grabCapture = false; RegisterGrabKey(); }  // Aufnahme abgebrochen
     g.pausedMinutes = 0;
     if (Player_State().active) SetTimer(g.hwnd, T_PIDLE, 60000, nullptr);  // pausierte Musik nach 10 Min. beenden
@@ -5491,6 +5569,11 @@ static void CloseBar(const wchar_t* why = L"?") {
 }
 
 // Breite passend zur Ansicht setzen (Ordner-Einstellungen sind breiter)
+static void BarWidths() {  // ca. ein Drittel des Bildschirms (mal eingestellte Breite) + Navigationsleiste
+    int most = g.workW - 2 * g.margin;
+    g.wNormal = std::min(most, std::max(S(340), std::max(S(380), g.workW / 3) * g.widthScale / 100) + RailW());
+    g.wWide = std::min(most, std::max(g.wNormal, g.workW * 46 / 100 + RailW()));
+}
 static void ApplyWidth() {
     int w = WantedWidth();
     if (w == g.w) return;
@@ -5513,8 +5596,8 @@ static void OpenBar(POINT pt) {
     g.margin = S(10);
     int m = g.margin;
     int workW = mi.rcWork.right - mi.rcWork.left;
-    g.wNormal = std::min(workW - 2 * m, std::max(S(380), workW / 3) + RailW());  // ca. ein Drittel des Bildschirms + Navigationsleiste
-    g.wWide = std::min(workW - 2 * m, std::max(g.wNormal, workW * 46 / 100 + RailW()));
+    g.workW = workW;
+    BarWidths();
     g.workRight = mi.rcWork.right;
     g.w = g.wNormal;
     g.h = (mi.rcWork.bottom - mi.rcWork.top) - 2 * m;
@@ -5708,7 +5791,7 @@ static void EndApp(int idx) {
         if (ConfirmBox(L"\u201E" + name + L"\u201C hat sich nicht von selbst beendet (läuft z. B. im Infobereich weiter).\nJetzt erzwingen?")) {
             if (!Apps_Kill(pids)) {
                 g.menuOpen = true;
-                MessageBoxW(g.hwnd, (L"\u201E" + name + L"\u201C läuft mit Administratorrechten und kann von HoverBar nicht beendet werden.").c_str(),
+                hb::Box(g.hwnd, (L"\u201E" + name + L"\u201C läuft mit Administratorrechten und kann von HoverBar nicht beendet werden.").c_str(),
                             L"HoverBar", MB_OK | MB_ICONINFORMATION | MB_TOPMOST);
                 g.menuOpen = false;
             }
@@ -5862,7 +5945,8 @@ static int TrackMenu(HMENU m) {
     GetCursorPos(&pt);
     g.menuOpen = true;
     SetForegroundWindow(g.hwnd);
-    int cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY, pt.x, pt.y, 0, g.hwnd, nullptr);
+    hb::g_style = {g.fontName, g.dpi};
+    int cmd = hb::Menu(m, g.hwnd, pt);
     g.menuOpen = false;
     DestroyMenu(m);
     return cmd;
@@ -6249,7 +6333,8 @@ static void ApplySlider(int x) {
         int kr = S(9), x0 = h.rc.left + kr, x1 = h.rc.right - kr;
         int v = x1 > x0 ? (x - x0) * 100 / (x1 - x0) : 0;
         v = std::max(0, std::min(100, v));
-        if (h.idx == 0) g.bgAlpha = 40 + v * 215 / 100;
+        if (h.idx == 4) g.glass = v;
+        else if (h.idx == 0) g.bgAlpha = 40 + v * 215 / 100;
         else if (h.idx == 1) g.imgStrength = v;
         else if (h.idx == 3) { g.volume = v; Player_SetVolume(VolumeGain(v)); }
         else if (v != g.blurAmount) { g.blurAmount = v; BlurBackdrop(); }
@@ -6263,6 +6348,7 @@ static void SaveSliders() {
     IniSet(L"Einstellungen", L"Deckkraft", std::to_wstring(g.bgAlpha).c_str());
     IniSet(L"Einstellungen", L"Bildstaerke", std::to_wstring(g.imgStrength).c_str());
     IniSet(L"Einstellungen", L"Unschaerfegrad", std::to_wstring(g.blurAmount).c_str());
+    IniSet(L"Einstellungen", L"GlasStaerke", std::to_wstring(g.glass).c_str());
     IniSet(L"Einstellungen", L"Lautstaerke", std::to_wstring(g.volume).c_str());
     if (g.lastSlider == 3) return;  // Lautstärke: kein Neuaufnehmen des Glases
     if (g.blur && !g.imgPath.empty()) CaptureBackdrop(g.capX, g.capY, g.wWide, g.h);  // Bild neu einmischen
@@ -6350,6 +6436,48 @@ static void SetFont(const std::wstring& name) {
     g.fontName = name;
     IniSet(L"Einstellungen", L"Schrift", name.c_str());
     SetDpi(g.dpi, true);
+}
+
+static void ScaleMenu(bool font) {
+    static const int sizes[] = {80, 90, 100, 110, 120, 130, 140}, gaps[] = {80, 90, 100, 115, 130, 145, 160};
+    const int* v = font ? sizes : gaps;
+    HMENU m = CreatePopupMenu();
+    AppendMenuW(m, MF_STRING | MF_GRAYED, 1, font ? L"Schriftgröße" : L"Zeilenabstand");
+    for (int i = 0; i < 7; i++)
+        AppendMenuW(m, MF_STRING | (v[i] == (font ? g.fontScale : g.spacing) ? MF_CHECKED : 0), 100 + i, (std::to_wstring(v[i]) + L" %").c_str());
+    int cmd = TrackMenu(m);
+    if (cmd < 100 || cmd > 106) return;
+    (font ? g.fontScale : g.spacing) = v[cmd - 100];
+    IniSet(L"Einstellungen", font ? L"Schriftgroesse" : L"Zeilenabstand", std::to_wstring(v[cmd - 100]).c_str());
+    SetDpi(g.dpi, true);
+    Refresh();
+}
+
+static void WidthMenu() {
+    static const int widths[] = {70, 80, 90, 100, 115, 130, 150};
+    HMENU m = CreatePopupMenu();
+    AppendMenuW(m, MF_STRING | MF_GRAYED, 1, L"Breite der Leiste");
+    for (int i = 0; i < 7; i++) AppendMenuW(m, MF_STRING | (widths[i] == g.widthScale ? MF_CHECKED : 0), 100 + i, (std::to_wstring(widths[i]) + L" %").c_str());
+    int cmd = TrackMenu(m);
+    if (cmd < 100 || cmd > 106) return;
+    g.widthScale = widths[cmd - 100];
+    IniSet(L"Einstellungen", L"Breite", std::to_wstring(g.widthScale).c_str());
+    BarWidths();
+    ApplyWidth();
+    Refresh();
+}
+
+// Eingabe übernehmen (leer = unverändert)
+static void CommitZone() {
+    if (g.zoneEdit < 0) return;
+    int v = _wtoi(g.zoneText.c_str());
+    if (v > 0) {
+        bool kill = g.zoneEdit == 7;
+        int& cur = kill ? g.killZone : g.clickZone;
+        cur = std::min(v, kill ? 90 : 100);
+        IniSet(L"Einstellungen", kill ? L"Killzone" : L"KlickKillzone", std::to_wstring(cur).c_str());
+    }
+    g.zoneEdit = -1;
 }
 
 // Schriftauswahl: gängige Schriften + "Andere Schrift …" (alle installierten)
@@ -6529,25 +6657,14 @@ static int SetSongFolder(const std::wstring& path, bool moveExisting) {
 // Bestätigung für Aktionen mit Folgen (Programm installieren, Songs verschieben/hochladen): Eine Antwort in unter 0,7 s kann niemand gelesen
 // haben (z. B. ein durchgeklickter Mausklick) und zählt als "Nein".
 static bool ConfirmCareful(const std::wstring& msg, const wchar_t* actionText) {
-    // eigener Dialog statt Ja/Nein: nur der Knopf mit dem Namen der Aktion stimmt zu, "Abbrechen" ist vorbelegt (Tastenkürzel wie J/N tun nichts)
-    TASKDIALOG_BUTTON btns[] = {{100, actionText}, {IDCANCEL, L"Abbrechen"}};
-    TASKDIALOGCONFIG c = {sizeof(c)};
-    c.hwndParent = g.open ? g.hwnd : nullptr;
-    c.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION;
-    c.pszWindowTitle = L"HoverBar";
-    c.pszMainInstruction = L"Bitte bestätigen";
-    c.pszContent = msg.c_str();
-    c.pszMainIcon = TD_INFORMATION_ICON;
-    c.cButtons = 2;
-    c.pButtons = btns;
-    c.nDefaultButton = IDCANCEL;
-    int btn = 0;
+    // nur der Knopf mit dem Namen der Aktion stimmt zu, "Abbrechen" ist vorbelegt
     ULONGLONG t0 = GetTickCount64();
     g.menuOpen = true;
-    HRESULT hr = TaskDialogIndirect(&c, &btn, nullptr, nullptr);
+    hb::g_style = {g.fontName, g.dpi};
+    int btn = hb::Dialog(g.open ? g.hwnd : nullptr, L"Bitte bestätigen", msg, {{actionText, 100}, {L"Abbrechen", IDCANCEL}}, 1, IDCANCEL);
     g.menuOpen = false;
     if (g.open) SetForegroundWindow(g.hwnd);
-    if (FAILED(hr) || btn != 100) return false;
+    if (btn != 100) return false;
     if (GetTickCount64() - t0 < 700) {  // schneller als lesbar: durchgeklickt
         Log(L"Bestätigung zu schnell beantwortet – als Nein gewertet");
         return false;
@@ -7164,7 +7281,7 @@ static void SyncSetupFinish(const std::wstring& dir, const std::wstring& cloudNa
         if (GetDiskFreeSpaceExW(dir.substr(0, dir.find_last_of(L'\\')).c_str(), &fr, &tot, &fa)) {
             if (fr.QuadPart < need + need / 20 + (50ull << 20)) {
                 g.menuOpen = true;
-                MessageBoxW(g.hwnd, (L"In " + cloudName + L" ist nicht genug Platz frei.\n\nBenötigt: " + FmtGB(need) + L", frei: " + FmtGB(fr.QuadPart) +
+                hb::Box(g.hwnd, (L"In " + cloudName + L" ist nicht genug Platz frei.\n\nBenötigt: " + FmtGB(need) + L", frei: " + FmtGB(fr.QuadPart) +
                                      L"\n\nWähle einen anderen Dienst (z. B. MEGA mit 20 GB oder Koofr mit 10 GB gratis) oder gib in " + cloudName + L" Platz frei.").c_str(),
                             L"HoverBar", MB_OK | MB_ICONWARNING | MB_TOPMOST);
                 g.menuOpen = false;
@@ -7311,7 +7428,7 @@ static void SongMenu(int songIdx, int pl, int pos) {
 
 static bool ConfirmBox(const std::wstring& msg) {
     g.menuOpen = true;
-    int r = MessageBoxW(g.hwnd, msg.c_str(), L"HoverBar", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2 | MB_TOPMOST);
+    int r = hb::Box(g.hwnd, msg.c_str(), L"HoverBar", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2 | MB_TOPMOST);
     g.menuOpen = false;
     SetForegroundWindow(g.hwnd);
     return r == IDYES;
@@ -7442,6 +7559,7 @@ static void Activate(int hitIdx, bool right) {
         return;
     }
     Hit h = g.hits[hitIdx];
+    if (g.zoneEdit >= 0 && !(h.type == HT::SetButton && h.idx == g.zoneEdit)) CommitZone();
     if (right) {
         if (IsSongHit(h.type)) { SongMenu(h.idx, h.f, h.pos); return; }
         if ((h.type == HT::NpCover || h.type == HT::BarCover) && g.pst.active) {  // Cover: Menü des laufenden Songs
@@ -7674,7 +7792,7 @@ static void Activate(int hitIdx, bool right) {
                 BuildMusic();
             } else {
                 g.menuOpen = true;
-                MessageBoxW(g.hwnd, undo ? L"Rückgängig hat nicht geklappt." : L"Schneiden hat nicht geklappt (Auswahl zu kurz oder zu lang?).",
+                hb::Box(g.hwnd, undo ? L"Rückgängig hat nicht geklappt." : L"Schneiden hat nicht geklappt (Auswahl zu kurz oder zu lang?).",
                             L"HoverBar", MB_OK | MB_ICONWARNING | MB_TOPMOST);
                 g.menuOpen = false;
             }
@@ -7737,6 +7855,10 @@ static void Activate(int hitIdx, bool right) {
                 RegisterGrabKey();
                 if (SpotifyMode() && g.open) Media_Open(g.hwnd, S(kBarArt));
             }
+        } else if (h.idx == 24 || h.idx == 25) {
+            bool& v = h.idx == 24 ? g.clickClose : g.clickWide;
+            v = !v;
+            IniSet(L"Einstellungen", h.idx == 24 ? L"KlickSchliessen" : L"KlickAuchAusserhalb", v ? L"1" : L"0");
         } else if (h.idx == 23) {
             g.calendarOn = !g.calendarOn;
             IniSet(L"Funktionen", L"Kalender", g.calendarOn ? L"1" : L"0");
@@ -7799,6 +7921,14 @@ static void Activate(int hitIdx, bool right) {
         break;
     case HT::SetButton:
         if (h.idx == 2) { FontMenu(); break; }
+        if (h.idx == 4 || h.idx == 5) { ScaleMenu(h.idx == 4); break; }
+        if (h.idx == 6) { WidthMenu(); break; }
+        if (h.idx == 7 || h.idx == 8) {  // Zahl tippen, Enter
+            g.zoneEdit = h.idx;
+            g.zoneText.clear();
+            Render();
+            break;
+        }
         if (h.idx == 3) {  // neue Taste aufnehmen
             g.hotCapture = !g.hotCapture;
             if (g.hotCapture) UnregisterHotKey(g.hwnd, 1);
@@ -7959,7 +8089,7 @@ static void Activate(int hitIdx, bool right) {
             if (ConfirmBox(L"WizTree wieder entfernen?\nDer Speicher-Knopf links verschwindet dann.")) {
                 if (!WizTree_Remove()) {
                     g.menuOpen = true;
-                    MessageBoxW(g.hwnd, L"WizTree konnte nicht entfernt werden – läuft es noch?", L"HoverBar", MB_OK | MB_ICONINFORMATION | MB_TOPMOST);
+                    hb::Box(g.hwnd, L"WizTree konnte nicht entfernt werden – läuft es noch?", L"HoverBar", MB_OK | MB_ICONINFORMATION | MB_TOPMOST);
                     g.menuOpen = false;
                 }
             }
@@ -8276,7 +8406,7 @@ static void QueueLink(const std::wstring& url) {
     Log(L"yt-dlp fehlt: frage nach dem Download");
     bool wasOpen = g.open;
     g.menuOpen = true;
-    int r = MessageBoxW(wasOpen ? g.hwnd : nullptr,
+    int r = hb::Box(wasOpen ? g.hwnd : nullptr,
                         L"Zum Umwandeln von YouTube-Links braucht HoverBar das Programm yt-dlp. Es fehlt noch.\n\n"
                         L"Jetzt von GitHub herunterladen (ca. 18 MB, mit Prüfsumme)? Der Link wird danach automatisch geladen.",
                         L"HoverBar", MB_YESNO | MB_ICONQUESTION | MB_TOPMOST | MB_SETFOREGROUND);
@@ -8461,8 +8591,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             MONITORINFO mi = {sizeof(mi)};
             GetMonitorInfoW(mon, &mi);
             int corner = MulDiv(60, (int)GetDpiForSystem(), 96);  // Ecken frei lassen (Schließen-Knopf, Uhr)
-            bool atEdge = pt.x >= mi.rcMonitor.right - 1 && pt.y > mi.rcMonitor.top + corner &&
-                          pt.y < mi.rcMonitor.bottom - corner;
+            bool atEdge = pt.x >= mi.rcMonitor.right - 1 && pt.y > mi.rcMonitor.top + corner && pt.y < mi.rcMonitor.bottom - corner;
             bool button = (GetAsyncKeyState(VK_LBUTTON) | GetAsyncKeyState(VK_RBUTTON)) & 0x8000;
             if (!atEdge) { g.armed = true; g.edgeSince = 0; return 0; }
             if (!g.armed || button) return 0;
@@ -8478,7 +8607,16 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (!g.open || g.closing || g.menuOpen || g.animating || g.dragCand || g.sliderDrag >= 0) return 0;
             POINT pt;
             GetCursorPos(&pt);
-            if (pt.x < g.monLeft + g.monW * 15 / 100) { CloseBar(L"Maus am linken Rand (15 %)"); return 0; }
+            int zone = g.monLeft + g.monW * g.killZone / 100;
+            SHORT keys = GetAsyncKeyState(VK_LBUTTON);
+            bool down = (keys & 0x8000) != 0, clicked = (down && !g.mouseWasDown) || (!down && (keys & 1) && !g.mouseWasDown);
+            g.mouseWasDown = down;
+            if (!g.clickClose) {
+                if (pt.x < zone) { CloseBar(L"Maus in der Killzone"); return 0; }
+            } else if (clicked) {  // nie bei Klicks in die Leiste selbst
+                int limit = g.clickWide ? std::max(zone, g.monLeft + g.monW * g.clickZone / 100) : zone;
+                if (pt.x < limit && pt.x < g.xShown) { CloseBar(L"Klick in die Killzone"); return 0; }
+            }
             if (++g.watchTick % 10 == 0 && FullscreenActive()) CloseBar(L"Vollbild");
         } else if (wp == T_CARET) {
             g.caretOn = !g.caretOn;
@@ -9144,6 +9282,15 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
     case WM_SYSKEYDOWN:
     case WM_KEYDOWN:
+        if (g.zoneEdit >= 0) {
+            if (wp >= '0' && wp <= '9' && g.zoneText.size() < 3) g.zoneText += (wchar_t)wp;
+            else if (wp >= VK_NUMPAD0 && wp <= VK_NUMPAD9 && g.zoneText.size() < 3) g.zoneText += (wchar_t)(L'0' + wp - VK_NUMPAD0);
+            else if (wp == VK_BACK && !g.zoneText.empty()) g.zoneText.pop_back();
+            else if (wp == VK_RETURN || wp == VK_TAB) CommitZone();
+            else if (wp == VK_ESCAPE) g.zoneEdit = -1;
+            Render();
+            return 0;
+        }
         if (g.ctlCapture >= 0) {
             if (wp == VK_SHIFT || wp == VK_CONTROL || wp == VK_MENU || wp == VK_LWIN || wp == VK_RWIN) return 0;
             if (wp != VK_ESCAPE) {  // Esc = alte Taste behalten
@@ -9201,7 +9348,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             IniSet(L"Einstellungen", L"TasteMods", std::to_wstring(g.hotMods).c_str());
             if (g.hotVk && !RegisterHotKey(hwnd, 1, g.hotMods | MOD_NOREPEAT, g.hotVk)) {
                 g.menuOpen = true;
-                MessageBoxW(hwnd, L"Diese Taste ist schon von einem anderen Programm belegt. Bitte eine andere wählen.", L"HoverBar",
+                hb::Box(hwnd, L"Diese Taste ist schon von einem anderen Programm belegt. Bitte eine andere wählen.", L"HoverBar",
                             MB_OK | MB_ICONINFORMATION | MB_TOPMOST);
                 g.menuOpen = false;
             }

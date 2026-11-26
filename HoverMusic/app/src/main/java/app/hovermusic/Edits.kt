@@ -46,6 +46,20 @@ data class Edit(val id: String, val title: String, val artist: String, val cover
 
 object Edits {
     const val FILE_NAME = "HoverMusic-Aenderungen.txt"
+    const val PLAYLIST_FILE = "HoverMusic-Playlists.txt"
+
+    /** Zeilen "Playlist<Tab>Song-ID" -> Songs je Playlist. */
+    fun parsePlaylists(text: String): Map<String, List<String>> =
+        text.lineSequence().map { it.trimEnd('\r').split('\t') }.filter { it.size == 2 && it[0].isNotEmpty() }
+            .groupBy({ it[0] }, { it[1] })
+
+    fun addToPlaylist(ctx: Context, tree: Uri, folderId: String, playlist: String, ids: List<String>) {
+        val old = child(ctx, tree, folderId, PLAYLIST_FILE)
+        val text = old?.let { u -> ctx.contentResolver.openInputStream(u)?.use { it.readBytes().toString(Charsets.UTF_8) } } ?: ""
+        val target = old ?: create(ctx, tree, folderId, "application/octet-stream", PLAYLIST_FILE)
+        write(ctx, target, (text + ids.joinToString("") { "$playlist\t$it\n" }).toByteArray(Charsets.UTF_8))
+    }
+
     const val DELETE = "DELETE"  // steht in der Cover-Spalte: der PC soll den Song löschen
 
     fun parse(text: String): Map<String, Edit> =

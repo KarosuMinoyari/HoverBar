@@ -4,6 +4,10 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class EditsTest {
+    @Test fun playlists() {
+        assertEquals(mapOf("Gym" to listOf("a", "b")), Edits.parsePlaylists("Gym\ta\r\nkaputt\nGym\tb\n"))
+    }
+
     @Test fun zusammenfuehren() {
         var t = Edits.merge("", Edit("a", "Alt", "X", "Cover/1.jpg"))
         t = Edits.merge(t, Edit("b", "Zwei\tmit Tab", "", ""))
