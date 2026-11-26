@@ -1,4 +1,4 @@
-// Optionale Erweiterungen ("Vorgeschlagen"): werden nur auf Wunsch heruntergeladen.
+// Optionale Erweiterungen ("Erweiterungen"): werden nur auf Wunsch heruntergeladen.
 // WizTree: Speicher-Analyse mit Baumansicht (kostenlos für private Nutzung, von diskanalyzer.com).
 #pragma once
 #include <windows.h>

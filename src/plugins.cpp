@@ -1,4 +1,4 @@
-// Optionale Erweiterungen. WizTree wird nur auf Wunsch (Einstellungen -> Vorgeschlagen) installiert:
+// Optionale Erweiterungen. WizTree wird nur auf Wunsch (Einstellungen -> Erweiterungen) installiert:
 // aktuelle portable Version von der offiziellen Seite suchen, Teil-Prüfsumme der Seite vergleichen,
 // entpacken (tar.exe von Windows) und die digitale Signatur des Herstellers prüfen.
 #define NOMINMAX

@@ -24,8 +24,11 @@ Die Symbole sind unten angeheftet. Mit dem Mausrad über der Leiste blätterst d
 | Apps | Ordner mit Apps, Favoriten, Favoriten-Links, „Zuletzt genutzt“ (stark nach oben überscrollen). Klick auf „Apps“ zeigt alle Apps mit Größe, laufende mit Arbeitsspeicher und Beenden-Knopf. |
 | Bibliothek | Alle Songs, darüber fest: Favoriten, Playlists, Zuletzt gespielt. |
 | Kalender | Monatsansicht mit Terminen. |
-| Claude | Optionale Erweiterung (Zahnrad → Vorgeschlagen → *Hinzufügen*). claude.ai eingebettet (WebView2), Anmeldung bleibt gespeichert, der Speicher wird beim Schließen freigegeben. *Entfernen* löscht auch die gespeicherte Anmeldung. |
-| Speicher | Nur mit der optionalen Erweiterung WizTree (Zahnrad → Vorgeschlagen). Laufwerke und größte Apps. |
+| Claude | Optionale Erweiterung (Zahnrad → Erweiterungen → *Hinzufügen*). claude.ai eingebettet (WebView2), Anmeldung bleibt gespeichert, der Speicher wird beim Schließen freigegeben. *Entfernen* löscht auch die gespeicherte Anmeldung. |
+| Timer | Optionale Erweiterung (Zahnrad → Erweiterungen). Stunden, Minuten, Sekunden über Ziffernräder (ziehen oder Mausrad), eigener Klingelton (MP3/WAV/M4A). Läuft bei geschlossener Leiste weiter, weckt den PC aber nicht aus dem Ruhezustand. |
+| Speicher | Nur mit der optionalen Erweiterung WizTree (Zahnrad → Erweiterungen). Laufwerke und größte Apps. |
+
+Unter Funktionen → *HoverBar* lassen sich **Home (Apps)** und **Kalender** einzeln ausschalten. Ohne Home startet HoverBar in der Musik-Bibliothek (Speicher ist dann auch ausgeblendet); sind beide aus, ist es nur noch Musik-Player. Erweiterungen entfernst du im Reiter *Erweiterungen*.
 
 ## Apps
 
@@ -42,7 +45,7 @@ Eigener Player für die Songs im Musikordner (Standard `Musik\HoverBar`, änderb
 - **Musikleiste unten:** Cover (Klick öffnet „Läuft gerade“), Titel, Fortschritt, Steuerung, Lautstärke (klappt beim Darüberfahren aus), Herz für Favoriten, Zufall/Wiederholen (jeder Klick wechselt den Modus: aus, Zufall, Playlist wiederholen, Song wiederholen).
 - **Läuft gerade:** Großes Cover, Steuerung, Songtext (aus einer `.lrc`-Datei neben dem Song oder von lrclib.net, dabei werden Titel und Künstler übertragen). Mit dem Mausrad im Text suchen, Klick springt dorthin; nach 2 s geht es zurück zur aktuellen Zeile. Nach unten scrollen klappt die Ansicht in die Bibliothek ein. Rechtsklick aufs Cover: Song bearbeiten.
 - **Song schneiden:** Rechtsklick → *Bearbeiten / Schneiden*. Linien für Anfang und Ende (auf die Millisekunde), Wellenform, Rückgängig, „Auswahl entfernen“. Verlustfrei.
-- **Tasten:** Ende halten + Pos1 = Play/Pause, Bild ab = weiter, Bild auf = zurück, „+“/„−“ = Lautstärke. Steuern nur den eigenen Player.
+- **Tasten:** Öffnen-Taste halten (Standard Ende) + Pos1 = Play/Pause, Bild ab = weiter, Bild auf = zurück, „+“/„−“ = Lautstärke. Jede dieser Tasten lässt sich unter Funktionen → Tasten ändern. Steuern nur den eigenen Player.
 - **Meistgespielt:** Der Knopf neben „Alle abspielen“ sortiert „Alle Songs“ nach Titel oder nach Anzahl der Wiedergaben.
 - **Leiser bei Videos:** Spielt ein Browser oder Video-Player Ton, wird die Musik auf 10 % abgesenkt.
 - **Tastatur:** Pfeiltasten wandern durch die Leiste, Enter aktiviert, die Menü-Taste ist der Rechtsklick. Während du tippst, gehören links/rechts dem Textfeld.
@@ -51,7 +54,7 @@ Eigener Player für die Songs im Musikordner (Standard `Musik\HoverBar`, änderb
 
 ## Musik-Sync (Erweiterung: Musik aufs Handy)
 
-Optional unter Zahnrad → Vorgeschlagen → *Musik-Sync*. Legt deine Songs, Cover und Playlists in einen Ordner deines Cloud-Programms, damit andere Geräte (z. B. eine Handy-App) sie spielen können.
+Optional unter Zahnrad → Erweiterungen → *Musik-Sync*. Legt deine Songs, Cover und Playlists in einen Ordner deines Cloud-Programms, damit andere Geräte (z. B. eine Handy-App) sie spielen können.
 
 - **Beliebiger Anbieter:** HoverBar erkennt installierte Cloud-Programme (Google Drive, OneDrive, Koofr, MEGA, pCloud, Dropbox) und zeigt bei Google Drive und pCloud den freien Platz. Fehlt ein Dienst, installiert ihn ein Klick (Eintrag „… installieren“) über den Windows-Paketmanager winget (Hersteller-Paket mit Prüfsumme, Windows fragt eventuell nach Administratorrechten; danach im Cloud-Programm anmelden und wieder auf „Einrichten“ klicken). Gibt es kein winget (oder kein Paket, z. B. bei Koofr), lädt HoverBar den Installer direkt vom Hersteller (HTTPS) und startet ihn erst, wenn die digitale Signatur gültig ist und zum Hersteller passt (Koofr, MEGA, Google Drive, OneDrive, Dropbox); eine veränderte Datei wird abgelehnt. Nur wenn es gar keinen Weg gibt (pCloud ohne winget), öffnet der Eintrag die Download-Seite. Nach der Installation startet HoverBar das Programm, wartet auf die Anmeldung und richtet den Musik-Sync dann automatisch ein. Ein Dienst gilt nur als installiert, wenn das Programm wirklich da ist (übrig gebliebene Startmenü-Verknüpfungen zählen nicht). Alternativ ein eigener Ordner. Reicht der Platz nicht, bricht HoverBar vor dem Verschieben ab (bei Anbietern, die ihren Speicher nicht als Laufwerk zeigen, steht ein Hinweis).
 - **Einrichten:** Die Songs werden im Hintergrund in `<Cloud>\HoverBar-Musik` verschoben, danach spielt HoverBar von dort. Neue Downloads landen ebenfalls dort. Das Cloud-Programm lädt hoch, HoverBar selbst überträgt nichts ins Internet. Nur für die eigene Musik gedacht, nicht zum Teilen.
@@ -101,7 +104,7 @@ Logo, Titel, Zahnrad; rechts Bluetooth, WLAN, Akku und das Menü `···` (Neu l
 ## Daten und Datenschutz
 
 - Einstellungen: `%APPDATA%\HoverBar\HoverBar.ini`; Termine: `termine.txt` im selben Ordner.
-- Netzwerk nur auf Anforderung: YouTube-Downloads, Cover-Suche (Deezer/iTunes), Songtexte (lrclib.net), Website-Symbole der Favoriten-Links (und das Claude-Symbol von claude.ai, sobald du den Reiter „Vorgeschlagen“ öffnest oder Claude hinzugefügt hast), `yt-dlp`/WizTree/HoverBar-Updates (GitHub bzw. diskanalyzer.com), die Claude-Seite. Es gibt keine Konten und keine Telemetrie.
+- Netzwerk nur auf Anforderung: YouTube-Downloads, Cover-Suche (Deezer/iTunes), Songtexte (lrclib.net), Website-Symbole der Favoriten-Links (und das Claude-Symbol von claude.ai, sobald du den Reiter „Erweiterungen“ öffnest oder Claude hinzugefügt hast), `yt-dlp`/WizTree/HoverBar-Updates (GitHub bzw. diskanalyzer.com), die Claude-Seite. Es gibt keine Konten und keine Telemetrie.
 - Stürzt HoverBar ab, startet die geplante Aufgabe „HoverBar Neustart“ es neu (wird beim ersten Start automatisch angelegt).
 
 ## Bauen
