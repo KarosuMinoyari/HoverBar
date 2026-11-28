@@ -142,7 +142,7 @@ fun LibraryScreen(vm: MusicViewModel, onOpenNow: () -> Unit, onSettings: () -> U
             val lib = library
             val hits = results
             if (hits != null) {
-                SearchResults(hits, searching) { Downloader.download(context, "https://youtu.be/${it.id}", toast = true) }
+                SearchResults(vm, hits, searching) { Downloader.download(context, "https://youtu.be/${it.id}", toast = true) }
             } else if (lib == null) {
                 if (!loading && error == null) Text("Keine Bibliothek geladen.", Modifier.padding(20.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
             } else when {
@@ -191,23 +191,71 @@ fun LibraryScreen(vm: MusicViewModel, onOpenNow: () -> Unit, onSettings: () -> U
 }
 
 @Composable
-internal fun SearchResults(hits: List<Found>, searching: Boolean, onPick: (Found) -> Unit) {
+internal fun SearchResults(vm: MusicViewModel, hits: List<Found>, searching: Boolean, onPick: (Found) -> Unit) {
     if (hits.isEmpty()) {
         Text(if (searching) "Suche …" else "Nichts gefunden.", Modifier.padding(20.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
         return
     }
     val progress by Downloader.progress.collectAsState()
+    // Hörprobe: Antippen spielt die Tonspur direkt von YouTube; geladen wird über den Pfeil rechts
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val player = remember { android.media.MediaPlayer() }
+    var playing by remember { mutableStateOf<String?>(null) }
+    var loading by remember { mutableStateOf(false) }
+    androidx.compose.runtime.DisposableEffect(Unit) { onDispose { player.release() } }
+    fun stop() {
+        player.reset()
+        playing = null
+        loading = false
+    }
+    val own by vm.isPlaying.collectAsState()
+    androidx.compose.runtime.LaunchedEffect(own) { if (own && playing != null) stop() }
+    androidx.compose.runtime.LaunchedEffect(playing) {
+        val id = playing ?: return@LaunchedEffect
+        val url = Downloader.streamUrl(ctx, id)
+        if (playing != id) return@LaunchedEffect
+        runCatching {
+            player.reset()
+            player.setAudioAttributes(android.media.AudioAttributes.Builder().setUsage(android.media.AudioAttributes.USAGE_MEDIA).build())
+            player.setDataSource(url ?: error("keine Adresse"))
+            player.setOnPreparedListener { loading = false; it.start() }
+            player.setOnCompletionListener { stop() }
+            player.setOnErrorListener { _, _, _ -> stop(); true }
+            player.prepareAsync()
+        }.onFailure {
+            stop()
+            Downloader.status.value = "Hörprobe nicht möglich (Internet?)."
+        }
+    }
     LazyColumn(Modifier.fillMaxSize()) {
         itemsIndexed(hits) { _, f ->
             val p = progress[f.id]
-            Column(Modifier.fillMaxWidth().clickable(enabled = p == null) { onPick(f) }.padding(horizontal = 20.dp, vertical = 10.dp)) {
+            Column(Modifier.fillMaxWidth().clickable {
+                if (playing == f.id) stop() else {
+                    stop()
+                    vm.pause()
+                    playing = f.id
+                    loading = true
+                }
+            }.padding(horizontal = 20.dp, vertical = 10.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                if (vm.look.value.suggestCovers) {
+                    coil.compose.AsyncImage(
+                        "https://i.ytimg.com/vi/${f.id}/mqdefault.jpg", null, Modifier.size(52.dp).clip(RoundedCornerShape(12.dp)),
+                        contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                    )
+                    Spacer(Modifier.width(12.dp))
+                }
+                Icon(if (playing == f.id) HmIcons.Pause else HmIcons.Play, "Hörprobe", Modifier.size(22.dp))
+                Spacer(Modifier.width(10.dp))
                 Column(Modifier.weight(1f)) {
                     Text(f.title, maxLines = 2, overflow = TextOverflow.Ellipsis, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-                    Text("${f.channel} · ${fmtTime(f.seconds * 1000L)}", maxLines = 1, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(if (playing == f.id && loading) "Hörprobe lädt …" else "${f.channel} · ${fmtTime(f.seconds * 1000L)}", maxLines = 1, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 if (p == 1f) Text("✓", fontSize = 20.sp, color = MaterialTheme.colorScheme.primary)
-                else Icon(HmIcons.Download, "Laden", tint = if (p == null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+                else androidx.compose.material3.IconButton(onClick = { onPick(f) }, enabled = p == null) {
+                    Icon(HmIcons.Download, "Laden", tint = if (p == null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+                }
             }
             if (p != null && p < 1f) {  // wartet oder lädt: Balken direkt unter dem Song
                 val bar = Modifier.fillMaxWidth().padding(top = 8.dp).height(4.dp).clip(CircleShape)

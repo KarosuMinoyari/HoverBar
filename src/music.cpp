@@ -2,6 +2,7 @@
 #define NOMINMAX
 #include "music.h"
 #include "parse.h"
+#include "fileio.h"
 #include <unknwn.h>
 #include <shlobj.h>
 #include <propsys.h>
@@ -24,6 +25,7 @@
 #include <cwctype>
 #include <deque>
 #include <random>
+#include <set>
 #undef GetCurrentTime
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Foundation.Collections.h>
@@ -32,6 +34,7 @@
 #include <winrt/Windows.Media.Playback.h>
 #include <winrt/Windows.Storage.Streams.h>
 #include <winrt/Windows.Networking.Connectivity.h>
+#include "eq.h"
 
 #pragma comment(lib, "mfplat.lib")
 #pragma comment(lib, "mfreadwrite.lib")
@@ -168,21 +171,6 @@ static std::wstring NewId() {
     wchar_t b[40];
     wsprintfW(b, L"x%08lx%04x", gd.Data1, gd.Data2);
     return b;
-}
-static std::wstring YoutubeId(const std::wstring& url) {
-    auto take = [&](size_t p) {
-        std::wstring id;
-        while (p < url.size() && (iswalnum(url[p]) || url[p] == L'-' || url[p] == L'_') && id.size() < 11) id += url[p++];
-        return id.size() == 11 ? id : L"";
-    };
-    for (const wchar_t* k : {L"v=", L"youtu.be/", L"/shorts/", L"/embed/", L"/live/"}) {
-        size_t p = url.find(k);
-        if (p != std::wstring::npos) {
-            std::wstring id = take(p + wcslen(k));
-            if (!id.empty()) return id;
-        }
-    }
-    return L"";
 }
 
 // Text einer Webadresse holen (für die Cover-Suche)
@@ -339,29 +327,13 @@ static void WriteId3(const Song& s) {
     }
     uint32_t n = (uint32_t)frames.size();
     BYTE hdr[10] = {'I', 'D', '3', 3, 0, 0, (BYTE)((n >> 21) & 0x7f), (BYTE)((n >> 14) & 0x7f), (BYTE)((n >> 7) & 0x7f), (BYTE)(n & 0x7f)};
-    std::wstring tmp = s.file + L".tmp";
-    HANDLE w = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
-    if (w == INVALID_HANDLE_VALUE) return;
-    DWORD wr;
-    bool ok = WriteFile(w, hdr, 10, &wr, nullptr) && WriteFile(w, frames.data(), (DWORD)frames.size(), &wr, nullptr) &&
-              WriteFile(w, data.data() + audio, (DWORD)(data.size() - audio), &wr, nullptr);
-    CloseHandle(w);
-    if (!ok || !MoveFileExW(tmp.c_str(), s.file.c_str(), MOVEFILE_REPLACE_EXISTING)) DeleteFileW(tmp.c_str());
+    std::vector<BYTE> out(hdr, hdr + 10);
+    out.insert(out.end(), frames.begin(), frames.end());
+    out.insert(out.end(), data.begin() + audio, data.end());
+    WriteAtomic(s.file, out.data(), out.size());
 }
 
 // ---------------------------------------------------------------- Schneiden (verlustfrei, ganze MP3-Frames)
-
-static bool ReadAll(const std::wstring& f, std::vector<BYTE>& d) {
-    HANDLE h = CreateFileW(f.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
-    if (h == INVALID_HANDLE_VALUE) return false;
-    LARGE_INTEGER sz;
-    GetFileSizeEx(h, &sz);
-    d.resize((size_t)sz.QuadPart);
-    DWORD rd = 0;
-    BOOL ok = d.empty() || ReadFile(h, d.data(), (DWORD)d.size(), &rd, nullptr);
-    CloseHandle(h);
-    return ok && rd == d.size();
-}
 
 // Frames (Position, Länge) einer MP3 finden; liefert Sekunden pro Frame
 static double ParseMp3(const std::vector<BYTE>& d, size_t& audio, std::vector<std::pair<size_t, size_t>>& fr) {
@@ -531,18 +503,12 @@ bool Music_Trim(const std::wstring& id, double from, double to, bool keepInside)
     if (keep < 10) return false;  // fast nichts übrig
     CreateDirectoryW((DataDir() + L"\\undo").c_str(), nullptr);
     if (!CopyFileW(g_songs[i].file.c_str(), UndoFile(id, Music_UndoCount(id) + 1).c_str(), FALSE)) return false;
-    std::wstring tmp = g_songs[i].file + L".tmp";
-    HANDLE w = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
-    if (w == INVALID_HANDLE_VALUE) return false;
-    DWORD wr;
-    bool ok = !audio || WriteFile(w, d.data(), (DWORD)audio, &wr, nullptr);  // ID3-Tag (Titel, Cover) bleibt
-    for (size_t k = 0; ok && k < fr.size(); k++) {
+    std::vector<BYTE> out(d.begin(), d.begin() + audio);  // ID3-Tag (Titel, Cover) bleibt
+    for (size_t k = 0; k < fr.size(); k++) {
         bool inside = k >= a && k < b;
-        if (inside == keepInside) ok = WriteFile(w, d.data() + fr[k].first, (DWORD)fr[k].second, &wr, nullptr) != FALSE;
+        if (inside == keepInside) out.insert(out.end(), d.begin() + fr[k].first, d.begin() + fr[k].first + fr[k].second);
     }
-    CloseHandle(w);
-    if (!ok || !MoveFileExW(tmp.c_str(), g_songs[i].file.c_str(), MOVEFILE_REPLACE_EXISTING)) {
-        DeleteFileW(tmp.c_str());
+    if (!WriteAtomic(g_songs[i].file, out.data(), out.size())) {
         DeleteFileW(UndoFile(id, Music_UndoCount(id)).c_str());
         return false;
     }
@@ -585,7 +551,10 @@ void Music_Init(HWND notify) {
         }
         if (f[0] == L"S" && f.size() >= 8) {
             Song s{f[1], f[2], f[3], f[4], f[5], f[6], _wtoi(f[7].c_str()), f.size() >= 9 ? _wtoi(f[8].c_str()) : 0};
-            if (GetFileAttributesW(s.file.c_str()) != INVALID_FILE_ATTRIBUTES) g_songs.push_back(s);
+            // fehlt nur die Datei, ist der Song gelöscht; fehlt der ganze Ordner (Stick, Netzlaufwerk), bleibt er bis zum nächsten Mal
+            std::wstring dir = s.file.substr(0, s.file.find_last_of(L'\\'));
+            if (GetFileAttributesW(s.file.c_str()) != INVALID_FILE_ATTRIBUTES || GetFileAttributesW(dir.c_str()) == INVALID_FILE_ATTRIBUTES)
+                g_songs.push_back(s);
         } else if (f[0] == L"P" && f.size() >= 2) {
             Playlist p{f[1], {}};
             for (size_t i = 2; i < f.size(); i++)
@@ -614,14 +583,7 @@ void Music_Save() {
         for (auto& id : p.ids) out += L"\t" + id;
         out += L"\n";
     }
-    std::string u = ToUtf8(out);
-    std::wstring tmp = LibraryFile() + L".tmp";
-    HANDLE h = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
-    if (h == INVALID_HANDLE_VALUE) return;
-    DWORD wr;
-    WriteFile(h, u.data(), (DWORD)u.size(), &wr, nullptr);
-    CloseHandle(h);
-    MoveFileExW(tmp.c_str(), LibraryFile().c_str(), MOVEFILE_REPLACE_EXISTING);
+    if (!WriteAtomic(LibraryFile(), ToUtf8(out))) return;
     if (Music_SyncExportOn()) Music_ExportLibrary();  // Musik-Sync: Bibliotheksdatei im Cloud-Ordner nachziehen
 }
 
@@ -751,7 +713,7 @@ void Music_SearchCovers(const std::wstring& id, const std::wstring& artist, cons
 static CRITICAL_SECTION g_jobCs;
 static bool g_jobCsInit = false;
 static std::vector<DownloadJob> g_jobs;
-static HANDLE g_jobThread = nullptr;
+static bool g_jobRunning = false;  // läuft der Download-Thread? (unter g_jobCs)
 static HANDLE g_jobWake = nullptr;
 
 static void InitJobs() {
@@ -905,6 +867,15 @@ static void GuessArtistTitle(const std::wstring& videoTitle, const std::wstring&
 
 static std::string RunCapture(const std::wstring& cmd);
 
+// Grund eines fehlgeschlagenen Downloads festhalten: %APPDATA%\HoverBar\musik-fehler.log
+static void LogMusicError(const std::wstring& url, const std::wstring& why) {
+    std::wstring lf = KnownFolder(FOLDERID_RoamingAppData) + L"\\HoverBar\\musik-fehler.log";
+    if (FILE* fp = _wfopen(lf.c_str(), L"a, ccs=UTF-8")) {
+        fwprintf(fp, L"%s\n  %s\n", url.c_str(), why.c_str());
+        fclose(fp);
+    }
+}
+
 static DWORD WINAPI JobThread(LPVOID) {
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     MFStartup(MF_VERSION, MFSTARTUP_LITE);
@@ -918,7 +889,13 @@ static DWORD WINAPI JobThread(LPVOID) {
             if (g_jobs[i].stage == 0) { idx = i; url = g_jobs[i].url; job = g_jobs[i]; break; }
         LeaveCriticalSection(&g_jobCs);
         if (idx == (size_t)-1) {
-            if (WaitForSingleObject(g_jobWake, 60000) == WAIT_TIMEOUT) break;  // eine Minute nichts zu tun: Thread beenden
+            if (WaitForSingleObject(g_jobWake, 60000) != WAIT_TIMEOUT) continue;
+            // eine Minute nichts zu tun: beenden, aber unter der Sperre, sonst bliebe ein gerade eingereihter Auftrag liegen
+            EnterCriticalSection(&g_jobCs);
+            bool waiting = std::any_of(g_jobs.begin(), g_jobs.end(), [](const DownloadJob& j) { return j.stage == 0; });
+            if (!waiting) g_jobRunning = false;
+            LeaveCriticalSection(&g_jobCs);
+            if (!waiting) break;
             continue;
         }
         UpdateJob(idx, 1, 0);
@@ -1012,12 +989,7 @@ static DWORD WINAPI JobThread(LPVOID) {
         if (!started || file.empty() || GetFileAttributesW(file.c_str()) == INVALID_FILE_ATTRIBUTES) {
             std::wstring err = !started ? L"yt-dlp fehlt" : lastLines.find(L"ERROR") != std::wstring::npos ? lastLines : L"Download fehlgeschlagen";
             UpdateJob(idx, -1, -1, L"", err);
-            // Grund festhalten: %APPDATA%\HoverBar\musik-fehler.log
-            std::wstring lf = KnownFolder(FOLDERID_RoamingAppData) + L"\\HoverBar\\musik-fehler.log";
-            if (FILE* fp = _wfopen(lf.c_str(), L"a, ccs=UTF-8")) {
-                fwprintf(fp, L"%s\n  %s\n", url.c_str(), lastLines.c_str());
-                fclose(fp);
-            }
+            LogMusicError(url, lastLines);
             continue;
         }
 
@@ -1027,7 +999,12 @@ static DWORD WINAPI JobThread(LPVOID) {
         s.url = url;
         s.duration = duration;
         GuessArtistTitle(vtitle, uploader, ytArtist, ytTrack, s.artist, s.title);
-        if (!job.name.empty()) {  // gesucht: Angaben aus der Liste statt aus dem Videotitel
+        if (!job.repairId.empty()) {  // Reparatur: derselbe Song, nur mit neuer Datei
+            s.id = job.repairId;
+            s.artist = job.artist;
+            s.title = job.name;
+            s.repair = true;
+        } else if (!job.name.empty()) {  // gesucht: Angaben aus der Liste statt aus dem Videotitel
             s.artist = job.artist;
             s.title = job.name;
             s.playlist = job.playlist;
@@ -1035,6 +1012,8 @@ static DWORD WINAPI JobThread(LPVOID) {
         }
         CreateDirectoryW(Music_Folder().c_str(), nullptr);
         std::wstring base = Music_Folder() + L"\\" + SafeFileName(s.artist.empty() ? s.title : s.artist + L" - " + s.title);
+        // Reparatur: Dateiname bleibt, HoverMusic erkennt seinen Download am "[yt ID]" darin
+        if (s.repair) base = job.repairFile.substr(0, job.repairFile.find_last_of(L'.'));
         s.file = base + L".mp3";
         for (int n = 2; GetFileAttributesW(s.file.c_str()) != INVALID_FILE_ATTRIBUTES; n++) s.file = base + L" (" + std::to_wstring(n) + L").mp3";
         UpdateJob(idx, 2, 0, s.artist.empty() ? s.title : s.artist + L" – " + s.title);
@@ -1048,11 +1027,9 @@ static DWORD WINAPI JobThread(LPVOID) {
                 goto retry;
             }
             UpdateJob(idx, -1, -1, L"", L"Umwandeln in MP3 fehlgeschlagen");
-            std::wstring lf = KnownFolder(FOLDERID_RoamingAppData) + L"\\HoverBar\\musik-fehler.log";
-            if (FILE* fp = _wfopen(lf.c_str(), L"a, ccs=UTF-8")) {
-                fwprintf(fp, L"%s\n  MP3-Umwandlung fehlgeschlagen, Schritt %d, 0x%08X\n", url.c_str(), g_convStep, (unsigned)g_convHr);
-                fclose(fp);
-            }
+            wchar_t why[80];
+            swprintf(why, 80, L"MP3-Umwandlung fehlgeschlagen, Schritt %d, 0x%08X", g_convStep, (unsigned)g_convHr);
+            LogMusicError(url, why);
             continue;
         }
 
@@ -1060,9 +1037,9 @@ static DWORD WINAPI JobThread(LPVOID) {
         UpdateJob(idx, 3, 100);
         std::wstring coverTmp = TempDir() + L"\\cover_" + s.id + L".jpg";
         bool haveCover = false;
-        for (auto& u : FindCoverUrlsSmart(s.artist, s.title, 1))
+        if (!s.repair) for (auto& u : FindCoverUrlsSmart(s.artist, s.title, 1))
             if (SUCCEEDED(URLDownloadToFileW(nullptr, u.c_str(), coverTmp.c_str(), 0, nullptr))) haveCover = true;
-        if (!haveCover && !id.empty()) {
+        if (!s.repair && !haveCover && !id.empty()) {
             for (const wchar_t* q : {L"maxresdefault", L"hqdefault"}) {
                 std::wstring u = L"https://i.ytimg.com/vi/" + id + L"/" + q + L".jpg";
                 if (SUCCEEDED(URLDownloadToFileW(nullptr, u.c_str(), coverTmp.c_str(), 0, nullptr))) { haveCover = true; break; }
@@ -1109,12 +1086,18 @@ static void QueueJob(const DownloadJob& j) {
     InitJobs();
     EnterCriticalSection(&g_jobCs);
     g_jobs.push_back(j);
+    bool start = !g_jobRunning;
+    g_jobRunning = true;
     LeaveCriticalSection(&g_jobCs);
-    if (g_jobThread && WaitForSingleObject(g_jobThread, 0) == WAIT_OBJECT_0) {
-        CloseHandle(g_jobThread);
-        g_jobThread = nullptr;
+    if (start) {
+        HANDLE t = CreateThread(nullptr, 0, JobThread, nullptr, 0, nullptr);
+        if (t) CloseHandle(t);
+        else {
+            EnterCriticalSection(&g_jobCs);
+            g_jobRunning = false;
+            LeaveCriticalSection(&g_jobCs);
+        }
     }
-    if (!g_jobThread) g_jobThread = CreateThread(nullptr, 0, JobThread, nullptr, 0, nullptr);
     SetEvent(g_jobWake);
     PostMessageW(g_notify, WM_APP_MUSIC, MUSIC_JOBS, 0);
 }
@@ -1195,6 +1178,8 @@ static wmp::MediaPlayer g_player{nullptr};
 static wmp::MediaPlaybackList g_list{nullptr};
 static std::vector<std::wstring> g_listIds;
 static double g_volume = 0.8;
+static bool g_eqOn = false, g_listEq = false;  // Equalizer an; läuft die aktuelle Liste schon durch ihn?
+static double g_pendingSeek = -1;              // nach dem Neuaufbau der Liste an diese Stelle springen
 
 static void ApplyPlayModes();  // Zufall/Wiederholen auf Player und Liste anwenden
 static double g_duck = 1.0;  // < 1, solange andere Medien laufen
@@ -1280,11 +1265,14 @@ void Player_Play(const std::vector<std::wstring>& ids, int start) {
         }
         g_list = wmp::MediaPlaybackList();
         g_listIds.clear();
+        g_listEq = g_eqOn;
+        g_pendingSeek = -1;
         for (auto& id : ids) {
             int i = Music_Find(id);
             if (i < 0) continue;
             const Song& s = g_songs[i];
-            auto src = wmc::MediaSource::CreateFromUri(winrt::Windows::Foundation::Uri(FileUri(s.file)));
+            auto src = g_eqOn && s.duration > 0 ? eq::Source(s.file, s.duration)
+                                                : wmc::MediaSource::CreateFromUri(winrt::Windows::Foundation::Uri(FileUri(s.file)));
             wmp::MediaPlaybackItem item(src);
             try {
                 auto props = item.GetDisplayProperties();
@@ -1360,6 +1348,22 @@ void Player_SetModes(bool shuffle, int repeat) {
     ApplyPlayModes();
 }
 
+int Eq_Count() { return eq::kPresetCount; }
+const wchar_t* Eq_Name(int preset) { return preset >= 0 && preset < eq::kPresetCount ? eq::kPresets[preset].name : eq::kPresets[0].name; }
+void Player_SetEq(bool on, int preset) {
+    g_eqOn = on;
+    eq::g_preset = on ? preset : 0;
+    if (!on || g_listEq || !g_player || !g_list) return;
+    // der laufende Song spielt noch am Equalizer vorbei: Liste an derselben Stelle neu aufbauen
+    PlayerState st = Player_State();
+    auto ids = g_listIds;
+    auto at = std::find(ids.begin(), ids.end(), st.songId);
+    if (!st.active || at == ids.end()) return;
+    Player_Play(ids, (int)(at - ids.begin()));
+    g_pendingSeek = st.pos;
+    if (!st.playing) Player_Toggle();
+}
+
 // Probehören eines Ausschnitts (from..to Sekunden)
 void Player_Preview(const std::wstring& id, double from, double to) {
     try {
@@ -1377,6 +1381,7 @@ void Player_Preview(const std::wstring& id, double from, double to) {
         g_list = wmp::MediaPlaybackList();
         g_list.Items().Append(item);
         g_listIds.assign(1, id);
+        g_listEq = false;
         g_player.IsLoopingEnabled(false);  // Probehören nie wiederholen
         g_player.Source(g_list);
         g_player.Play();
@@ -1442,6 +1447,11 @@ PlayerState Player_State() {
                      s.PlaybackState() == wmp::MediaPlaybackState::Opening;
         st.pos = s.Position().count() / 1e7;
         st.dur = s.NaturalDuration().count() / 1e7;
+        if (g_pendingSeek >= 0 && st.dur > 0) {
+            s.Position(winrt::Windows::Foundation::TimeSpan((long long)(g_pendingSeek * 1e7)));
+            st.pos = g_pendingSeek;
+            g_pendingSeek = -1;
+        }
         if (g_list) {
             uint32_t i = g_list.CurrentItemIndex();
             if (i < g_listIds.size()) st.songId = g_listIds[i];
@@ -1852,6 +1862,28 @@ static DWORD WINAPI LyricsThread(LPVOID pp) {
     return 0;
 }
 
+std::wstring Music_ReadLyrics(const std::wstring& id) {
+    int i = Music_Find(id);
+    std::vector<BYTE> d;
+    if (i < 0 || !ReadAll(LrcPath(g_songs[i].file), d) || d.size() > 2 * 1024 * 1024) return L"";
+    std::string s(d.begin(), d.end());
+    if (s.compare(0, 3, "\xEF\xBB\xBF") == 0) s.erase(0, 3);
+    return FromUtf8(s);
+}
+bool Music_SaveLyrics(const std::wstring& id, const std::wstring& text) {
+    int i = Music_Find(id);
+    if (i < 0) return false;
+    std::wstring lrc = LrcPath(g_songs[i].file);
+    bool ok;
+    if (Trim(text).empty()) ok = DeleteFileW(lrc.c_str()) || GetLastError() == ERROR_FILE_NOT_FOUND || GetLastError() == ERROR_PATH_NOT_FOUND;
+    else {
+        CreateDirectoryW(lrc.substr(0, lrc.find_last_of(L'\\')).c_str(), nullptr);
+        ok = WriteAtomic(lrc, ToUtf8(text));
+    }
+    if (ok) Music_Save();  // die Bibliotheksdatei fürs Handy nennt auch den Songtext
+    return ok;
+}
+
 void Music_LoadLyrics(const std::wstring& id, bool online) {
     int i = Music_Find(id);
     if (i < 0) return;
@@ -1953,16 +1985,7 @@ bool Music_ExportLibrary() {
         char ts[40];
         sprintf_s(ts, "%04d-%02d-%02dT%02d:%02d:%02d", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
         std::string out = std::string("{\n  \"format\": \"HoverBar-Bibliothek\",\n  \"version\": 1,\n  \"updated\": \"") + ts + "\",\n" + body + "}\n";
-        std::wstring tmp = file + L".tmp";
-        HANDLE h = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (h == INVALID_HANDLE_VALUE) return false;
-        DWORD wr = 0;
-        bool ok = WriteFile(h, out.data(), (DWORD)out.size(), &wr, nullptr) && wr == out.size();
-        CloseHandle(h);
-        if (!ok || !MoveFileExW(tmp.c_str(), file.c_str(), MOVEFILE_REPLACE_EXISTING)) {
-            DeleteFileW(tmp.c_str());
-            return false;
-        }
+        if (!WriteAtomic(file, out)) return false;
         g_lastBody = body;
         g_syncInfo = std::to_wstring(listed.size()) + (listed.size() == 1 ? L" Song" : L" Songs") + L" · Bibliothek " + hm;
     } else if (g_syncInfo.empty()) {
@@ -1982,6 +2005,43 @@ static int ShellDuration(const std::wstring& file) {  // Sekunden, wie der Explo
     PropVariantClear(&v);
     ps->Release();
     return sec;
+}
+
+// Manche m4a-Dateien von YouTube öffnet Windows, liefert aber keinen einzigen Ton (0 Samples).
+// Nur dieser Fall gilt als kaputt; lässt sich eine Datei gar nicht öffnen (z. B. noch nicht synchronisiert), bleibt sie in Ruhe.
+static bool IsSilentFile(const std::wstring& file) {
+    IMFSourceReader* rd = nullptr;
+    if (FAILED(MFCreateSourceReaderFromURL(file.c_str(), nullptr, &rd))) return false;
+    bool silent = false;
+    for (;;) {
+        DWORD flags = 0;
+        IMFSample* smp = nullptr;
+        if (FAILED(rd->ReadSample((DWORD)MF_SOURCE_READER_FIRST_AUDIO_STREAM, 0, nullptr, &flags, nullptr, &smp))) break;
+        if (smp) { smp->Release(); break; }
+        if (flags & MF_SOURCE_READERF_ENDOFSTREAM) { silent = true; break; }
+    }
+    rd->Release();
+    return silent;
+}
+
+// Solche Songs über ihren YouTube-Link neu laden (die Download-Warteschlange weicht dann auf eine andere Tonspur aus)
+static void RepairSilentSongs() {
+    static std::set<std::wstring> checked;  // je Programmlauf nur einmal prüfen und versuchen
+    if (!Music_ToolAvailable()) return;
+    MFStartup(MF_VERSION, MFSTARTUP_LITE);
+    for (auto& s : g_songs) {
+        if (_wcsicmp(PathFindExtensionW(s.file.c_str()), L".m4a") || s.url.rfind(L"https://youtu.be/", 0) != 0) continue;
+        if (!checked.insert(s.id).second || !IsSilentFile(s.file)) continue;
+        DownloadJob j;
+        j.url = s.url;
+        j.repairId = s.id;
+        j.repairFile = s.file;
+        j.artist = s.artist;
+        j.name = s.title;
+        j.title = s.artist.empty() ? s.title : s.artist + L" – " + s.title;
+        QueueJob(j);
+    }
+    MFShutdown();
 }
 
 // Vom Handy kommen "<Künstler> - <Titel> [yt <id>].m4a" (Cover gleich benannt in Cover\\); andere Dateien werden genauso aufgenommen.
@@ -2024,6 +2084,7 @@ int Music_ImportFolder() {
         FindClose(h);
     }
     if (added) Music_Save();
+    RepairSilentSongs();
     return added;
 }
 
@@ -2071,6 +2132,8 @@ static bool ImportPhonePlaylists() {
     return changed;
 }
 
+static std::wstring CutsDoneFile() { return DataDir() + L"\\schnitte.txt"; }
+
 // Zeilen: Song-ID <Tab> Titel <Tab> Künstler <Tab> Cover ("Cover/Name" oder leer) [<Tab> Schnitte, siehe unten]. Die Datei kommt aus der Cloud, also prüfen.
 bool Music_ImportEdits() {
     if (!g_syncExport) return false;
@@ -2083,8 +2146,11 @@ bool Music_ImportEdits() {
     bool read = !data.empty() && ReadFile(h, &data[0], sz, &got, nullptr) && got == sz;
     CloseHandle(h);
     if (!read) return playlists;
-    bool changed = playlists;
+    bool changed = playlists, cutsChanged = false;
     std::string waiting;  // Zeilen, die noch nicht gehen (Cover noch nicht heruntergeladen, Schnitt fehlgeschlagen)
+    std::vector<BYTE> doneRaw;  // schon ausgeführte Schnitte, Zeilen "Song-ID <Tab> Schnitte"
+    ReadAll(CutsDoneFile(), doneRaw);
+    std::wstring doneCuts = FromUtf8(std::string(doneRaw.begin(), doneRaw.end()));
     for (size_t a = 0; a < data.size();) {
         size_t b = data.find('\n', a);
         if (b == std::string::npos) b = data.size();
@@ -2107,38 +2173,29 @@ bool Music_ImportEdits() {
         }
         Music_UpdateMeta(f[0], f[1], f[2]);
         changed = true;
-        // Spalte 5: entfernte Bereiche "von-bis" in ms (Schritte mit ";", Bereiche mit ","), bezogen auf die ungeschnittene Datei
-        std::vector<std::pair<int, int>> cut;
-        for (size_t p = 0; f.size() >= 5 && p < f[4].size();) {
-            size_t e = f[4].find_first_of(L";,", p);
-            if (e == std::wstring::npos) e = f[4].size();
-            int x = 0, y = 0;
-            if (swscanf_s(f[4].substr(p, e - p).c_str(), L"%d-%d", &x, &y) == 2 && x >= 0 && y > x) cut.push_back({x, y});
-            p = e + 1;
-        }
-        std::sort(cut.begin(), cut.end());
+        // Spalte 5: entfernte Bereiche "von-bis" in ms, bezogen auf die Datei, wie das Handy sie kannte.
+        // Schon ausgeführt (das Handy hatte eine alte Kopie dieser Datei)? Dann nicht noch einmal schneiden.
+        // Nur MP3 lässt sich schneiden; bei anderen Dateien bietet das Handy es nicht an, ältere Zeilen fallen weg.
+        std::wstring cutKey = f.size() >= 5 && !f[4].empty() ? f[0] + L"\t" + f[4] : L"";
+        bool cutDone = !cutKey.empty() && (L"\n" + doneCuts).find(L"\n" + cutKey + L"\n") != std::wstring::npos;
         std::vector<std::pair<int, int>> merged;
-        for (auto& r : cut) {
-            if (!merged.empty() && r.first <= merged.back().second) merged.back().second = std::max(merged.back().second, r.second);
-            else merged.push_back(r);
-        }
+        if (!cutKey.empty() && !cutDone && IsMp3(g_songs[Music_Find(f[0])].file)) merged = ParseCuts(f[4]);
+        size_t planned = merged.size();
         // von hinten schneiden, damit die vorderen Zeiten gültig bleiben; was nicht geht, bleibt in der Datei (nichts doppelt)
         while (!merged.empty() && Music_Trim(f[0], merged.back().first / 1000.0, merged.back().second / 1000.0, false)) merged.pop_back();
+        if (merged.size() < planned) {
+            doneCuts += cutKey + L"\n";
+            cutsChanged = true;
+        }
         if (!merged.empty()) {
             std::wstring rest;
             for (auto& r : merged) rest += (rest.empty() ? L"" : L",") + std::to_wstring(r.first) + L"-" + std::to_wstring(r.second);
             waiting += ToUtf8(f[0] + L"\t" + f[1] + L"\t" + f[2] + L"\t\t" + rest) + "\n";
         }
     }
+    if (cutsChanged) WriteAtomic(CutsDoneFile(), ToUtf8(doneCuts));
     if (waiting.empty()) DeleteFileW(file.c_str());
-    else {
-        HANDLE w = CreateFileW(file.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (w != INVALID_HANDLE_VALUE) {
-            DWORD wr = 0;
-            WriteFile(w, waiting.data(), (DWORD)waiting.size(), &wr, nullptr);
-            CloseHandle(w);
-        }
-    }
+    else WriteAtomic(file, waiting);
     return changed;
 }
 
@@ -2197,10 +2254,6 @@ void Music_SyncSetup(HWND notify, const std::wstring& dir) {
 struct SuggestParams {
     std::vector<std::wstring> artists, owned;  // meistgehörte Künstler; vorhandene Titel (klein geschrieben)
 };
-static std::wstring LowerText(std::wstring s) {
-    for (auto& c : s) c = (wchar_t)towlower(c);
-    return s;
-}
 static std::vector<std::wstring> g_shownIdeas;  // in dieser Sitzung schon vorgeschlagen (nur ein Lauf gleichzeitig)
 template <class T> static void Mix(std::vector<T>& v) {
     static std::mt19937 rng{std::random_device{}()};
@@ -2223,7 +2276,7 @@ static DWORD WINAPI SuggestThread(LPVOID pp) {
             s.preview = JsonField(t, "preview");
             std::wstring image = JsonField(t, "cover_medium");  // erstes Vorkommen: das Album des Titels
             s.seconds = (int)JsonNumber(t, "duration");
-            std::wstring key = LowerText(s.title);
+            std::wstring key = LowerStr(s.title);
             if (s.title.empty() || s.preview.rfind(L"https://", 0) != 0 || std::find(seen.begin(), seen.end(), key) != seen.end()) continue;
             seen.push_back(key);
             if (image.rfind(L"https://", 0) == 0) {
@@ -2243,7 +2296,7 @@ static DWORD WINAPI SuggestThread(LPVOID pp) {
         for (auto& r : related) tracks(id(r), 2);
         tracks(id(found[0]), 1);  // und ein Song des Künstlers selbst, den du noch nicht hast
     }
-    for (auto& s : *out) g_shownIdeas.push_back(LowerText(s.title));
+    for (auto& s : *out) g_shownIdeas.push_back(LowerStr(s.title));
     if (out->empty()) g_shownIdeas.clear();  // alles durch: beim nächsten Mal von vorn
     if (!PostMessageW(g_notify, WM_APP_MUSIC, MUSIC_SUGGEST, (LPARAM)out)) delete out;
     delete p;
@@ -2253,7 +2306,7 @@ void Music_Suggest() {
     auto* p = new SuggestParams();
     std::vector<std::pair<int, std::wstring>> top;  // Gewicht, Künstler
     for (auto& s : g_songs) {
-        p->owned.push_back(LowerText(s.title));
+        p->owned.push_back(LowerStr(s.title));
         std::wstring a = s.artist.substr(0, s.artist.find_first_of(L",&;"));
         while (!a.empty() && a.back() == L' ') a.pop_back();
         if (a.empty()) continue;
@@ -2303,6 +2356,9 @@ static DWORD WINAPI SearchThread(LPVOID p) {
         }
         s.seconds = h.seconds;
         s.url = L"https://youtu.be/" + FromUtf8(h.id);
+        std::wstring file = TempDir() + L"\\treffer_" + std::to_wstring(GetTickCount64()) + L"_" + std::to_wstring(out->size()) + L".jpg";
+        if (SUCCEEDED(URLDownloadToFileW(nullptr, (L"https://i.ytimg.com/vi/" + FromUtf8(h.id) + L"/mqdefault.jpg").c_str(), file.c_str(), 0, nullptr)))
+            s.cover = file;
         out->push_back(s);
     }
     if (!PostMessageW(g_notify, WM_APP_MUSIC, MUSIC_FOUND, (LPARAM)out)) delete out;
@@ -2316,6 +2372,25 @@ void Music_Search(const std::wstring& query) {
     HANDLE t = CreateThread(nullptr, 0, SearchThread, q, 0, nullptr);
     if (t) CloseHandle(t);
     else delete q;
+}
+
+// Hörprobe eines Suchtreffers. Opus zuerst: die m4a-Spur von YouTube spielt Windows nicht bei jedem Video.
+static DWORD WINAPI PreviewThread(LPVOID p) {
+    auto* res = new std::pair<std::wstring, std::wstring>(*(std::wstring*)p, L"");
+    delete (std::wstring*)p;
+    std::string out = RunCapture(L"\"" + ToolPath() + L"\" --no-playlist --no-warnings -f \"251/250/bestaudio[ext=m4a]\" -g \"" + res->first + L"\"");
+    size_t a = out.rfind("https://");  // die Adresse steht in der letzten Zeile
+    if (a != std::string::npos) res->second = FromUtf8(out.substr(a));
+    if (!PostMessageW(g_notify, WM_APP_MUSIC, MUSIC_PREVIEW, (LPARAM)res)) delete res;
+    return 0;
+}
+void Music_FindPreview(const std::wstring& video) {
+    auto* v = new std::wstring(video);
+    for (auto& c : *v)
+        if (c == L'"' || c == L'\\' || c <= 32) c = L'_';
+    HANDLE t = CreateThread(nullptr, 0, PreviewThread, v, 0, nullptr);
+    if (t) CloseHandle(t);
+    else delete v;
 }
 
 // Für den Kalender: nie die alte Kopie aus dem Windows-Zwischenspeicher, und die geheime Adresse dort nicht liegen lassen

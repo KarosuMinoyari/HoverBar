@@ -13,7 +13,8 @@ Eine Leiste am rechten Bildschirmrand für Windows: Maus an den Rand halten (ode
 
 **Musik**
 - Eigener Player mit Playlists, Favoriten, „Zuletzt gespielt“, Sortieren nach Wiedergaben und Songtexten
-- Songs auf YouTube suchen oder per Link/Taste laden, mit Fortschrittsbalken
+- Songs auf YouTube suchen (mit Cover und Hörprobe) oder per Link/Taste laden, mit Fortschrittsbalken
+- Songtexte selbst schreiben und synchronisieren (LRC-Editor)
 - Spotify-Playlist übernehmen (CSV-Export)
 - Songs bearbeiten (Titel, Künstler, Cover) und verlustfrei schneiden
 - Tastensteuerung (anpassbar), leiser bei Videos, wahlweise Spotify steuern
@@ -21,7 +22,8 @@ Eine Leiste am rechten Bildschirmrand für Windows: Maus an den Rand halten (ode
 
 **Erweiterungen**
 - Kalender (auch Google-Kalender per iCal-Link, nur lesen), To-do-Liste, Timer
-- Songvorschläge mit Hörprobe, Claude-Chat, Speicherübersicht (WizTree)
+- Equalizer mit Voreinstellungen
+- Songvorschläge mit Hörprobe (auf der Musikseite), Claude-Chat, Speicherübersicht (WizTree)
 
 **Anpassen**
 - Farbe, Glas-Stärke, Hintergrundbild, Schrift, Schriftgröße, Zeilenabstand, Breite
@@ -31,7 +33,7 @@ Eine Leiste am rechten Bildschirmrand für Windows: Maus an den Rand halten (ode
 ### HoverMusic (Android)
 - Spielt die Musik aus HoverBar, Einrichtung per QR-Code, Wiedergabe im Hintergrund
 - Läuft-gerade-Ansicht mit wischbarem Cover und Songtext
-- YouTube-Suche und Laden (auch über „Teilen“ oder eine Schnelleinstellungs-Kachel), Songvorschläge
+- YouTube-Suche mit Cover und Hörprobe, Laden (auch über „Teilen“ oder eine Schnelleinstellungs-Kachel), Songvorschläge
 - Bearbeiten, Schneiden, Löschen und Playlists ergänzen; Änderungen gehen an den PC
 - Anpassbares Widget, Farben, Hintergrund, Schrift, Farbe des App-Symbols
 - Update direkt in der App
@@ -59,7 +61,7 @@ Die Symbole sind unten angeheftet. Mit dem Mausrad über der Leiste blätterst d
 | Bibliothek | Alle Songs, darüber fest: Favoriten, Playlists, Zuletzt gespielt. |
 | Claude | Optionale Erweiterung (Zahnrad → Erweiterungen → *Hinzufügen*). claude.ai eingebettet (WebView2), Anmeldung bleibt gespeichert, der Speicher wird beim Schließen freigegeben. *Entfernen* löscht auch die gespeicherte Anmeldung. |
 | Timer | Optionale Erweiterung (Zahnrad → Erweiterungen). Stunden, Minuten, Sekunden über Ziffernräder (ziehen oder Mausrad), eigener Klingelton (MP3/WAV/M4A). Läuft bei geschlossener Leiste weiter, weckt den PC aber nicht aus dem Ruhezustand. |
-| Vorschläge | Optionale Erweiterung. Songs ähnlicher Künstler zu deinen meistgehörten (Deezer, ohne Konto; übertragen werden nur Künstlernamen). Klick = 30-s-Hörprobe, Pfeil = laden. |
+| Vorschläge | Optionale Erweiterung, erreichbar oben auf der Musikseite. Songs ähnlicher Künstler zu deinen meistgehörten (Deezer, ohne Konto; übertragen werden nur Künstlernamen). Klick = Hörprobe, Pfeil = laden. |
 | Kalender | Erweiterung (wer ihn schon hatte, behält ihn). **Google Kalender:** unten „verbinden“, vorher die private iCal-Adresse kopieren (Kalender-Einstellungen → Kalender integrieren). Nur lesen; die Adresse bleibt auf diesem PC. |
 | To-do | Optionale Erweiterung: Aufgaben eintippen, abhaken, löschen. Liegt lokal in `todo.txt`. |
 | Speicher | Nur mit der optionalen Erweiterung WizTree (Zahnrad → Erweiterungen). Laufwerke und größte Apps. |
@@ -127,7 +129,9 @@ Eigene App im Ordner `HoverMusic/` (Kotlin, Jetpack Compose, Media3), mit eigene
 - **Einrichten:** In HoverBar am PC *Musik-Sync* einrichten, am Ende erscheint der QR-Code. In HoverMusic „QR-Code scannen“ (nutzt den Code-Scanner der Google Play-Dienste, ohne Kamera-Berechtigung; alternativ „Link aus der Zwischenablage“): Die App führt durch die Installation der Cloud-App auf dem Handy und die Wahl des Ordners `HoverBar-Musik` (Android-Ordnerauswahl: Google Drive, OneDrive, MEGA, Koofr … erscheinen dort). Es werden keine Zugangsdaten und keine Cloud-Schnittstellen gebraucht, die App liest nur diesen Ordner.
 - **Funktionen:** Alle Songs, Favoriten, Playlists, Zuletzt gespielt; „Läuft gerade“ mit großem Cover, Fortschritt, Zurück/Play/Weiter, Zufall/Wiederholen (jeder Klick wechselt: aus → Zufall → Playlist wiederholen → Song wiederholen), Herz; Songtext mit Mitscrollen (Tippen auf eine Zeile springt dorthin, nach 2 s geht es zur aktuellen Zeile zurück); Wiedergabe im Hintergrund mit Steuerung in der Benachrichtigung und auf dem Sperrbildschirm.
 - **Zu Playlists hinzufügen:** In der Playlist auf das runde + tippen und Songs wählen; HoverBar übernimmt das beim nächsten Öffnen.
-- **Vorschläge:** Stern oben: Songs ähnlicher Künstler mit 30-s-Hörprobe, Laden mit passender Länge; Album-Cover abschaltbar.
+- **Vorschläge:** oben auf der Musikseite: Songs ähnlicher Künstler mit 30-s-Hörprobe, Laden mit passender Länge; Album-Cover abschaltbar.
+- **Equalizer:** Erweiterung; Knopf „EQ“ bei „Läuft gerade“ (nur eigene Songs am PC).
+- **LRC-Editor:** Stift bei „Läuft gerade“; Text eingeben und beim Mithören mit F8 die Zeiten setzen.
 - **Suchen:** Feld oben in der Bibliothek, Treffer antippen lädt den Song.
 - **Von YouTube laden:** In YouTube auf *Teilen* → HoverMusic. yt-dlp wird beim ersten Start in der neuesten Version geholt (Aktualisieren über das Download-Symbol). Beim nächsten Öffnen der App wandert eine Kopie in den Cloud-Ordner; am PC liest sie der Knopf ⟳ neben „Meistgespielt“ ein (ein Balken darunter läuft, solange noch Dateien ankommen) (braucht Schreibrecht: bei älterer Einrichtung den Ordner neu wählen).
 - **Meistgespielt:** „Alle Songs“ lässt sich nach Wiedergaben sortieren (Zahl vom PC plus die auf dem Handy).

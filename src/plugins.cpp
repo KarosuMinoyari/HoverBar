@@ -3,6 +3,7 @@
 // entpacken (tar.exe von Windows) und die digitale Signatur des Herstellers prüfen.
 #define NOMINMAX
 #include "plugins.h"
+#include "fileio.h"
 #include <shlobj.h>
 #include <urlmon.h>
 #include <bcrypt.h>
@@ -68,17 +69,6 @@ static void Set(HWND n, int state, const std::wstring& msg, int pct = -1) {
     PostMessageW(n, WM_APP_PLUGIN, 0, 0);
 }
 
-static bool ReadAll(const std::wstring& f, std::vector<BYTE>& d) {
-    HANDLE h = CreateFileW(f.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
-    if (h == INVALID_HANDLE_VALUE) return false;
-    LARGE_INTEGER sz;
-    GetFileSizeEx(h, &sz);
-    d.resize((size_t)sz.QuadPart);
-    DWORD rd = 0;
-    BOOL ok = d.empty() || ReadFile(h, d.data(), (DWORD)d.size(), &rd, nullptr);
-    CloseHandle(h);
-    return ok && rd == d.size();
-}
 
 static std::string Sha256Hex(const std::wstring& file) {
     std::vector<BYTE> d;

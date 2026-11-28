@@ -12,6 +12,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.json.JSONObject
@@ -94,6 +95,18 @@ object Downloader {
                 searching.value = false
             }
         }
+    }
+
+    /** Adresse der Tonspur zum Probehören, oder null. Ohne die Warteschlange, damit ein laufender Download nicht aufhält. */
+    suspend fun streamUrl(ctx: Context, id: String): String? = withContext(Dispatchers.IO) {
+        runCatching {
+            init(ctx.applicationContext, false)
+            val request = YoutubeDLRequest("https://youtu.be/$id")
+            request.addOption("--no-playlist")
+            request.addOption("-f", "bestaudio[ext=m4a]/bestaudio")
+            request.addOption("-g")
+            YoutubeDL.getInstance().execute(request, null, null).out.lineSequence().lastOrNull { it.startsWith("https://") }?.trim()
+        }.getOrNull()
     }
 
     /** Meldung für die Anzeige, null = nichts zu melden. */

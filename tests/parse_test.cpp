@@ -28,6 +28,12 @@ int main() {
     CHECK(e[1].date == 20261109 && e[2].date == 20261111);
     CHECK(e[3].date == 20261224 && e[3].minutes == -1 && e[4].date == 20261225);
     CHECK(IcsDate(IcsDays(20240229) + 1) == 20240301);
+    auto c = ParseCuts(L"5000-8000;1000-2000,7000-9000;x;3-1;-5-10");
+    CHECK(c.size() == 2 && c[0] == std::make_pair(1000, 2000) && c[1] == std::make_pair(5000, 9000));
+    CHECK(ParseCuts(L"").empty());
+    CHECK(StampLine(L"Hallo", 65.239) == L"[01:05.24]Hallo");
+    CHECK(StampLine(L"[00:01.00][00:09]Hallo", 0) == L"[00:00.00]Hallo");
+    CHECK(StampLine(L"[Refrain]", 1) == L"[00:01.00][Refrain]");
     puts("ok");
     return 0;
 }

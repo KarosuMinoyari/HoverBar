@@ -2,8 +2,46 @@
 #pragma once
 #include <algorithm>
 #include <cstdlib>
+#include <cwchar>
+#include <utility>
 #include <string>
 #include <vector>
+
+// Schnitte vom Handy: "von-bis" in ms, Schritte mit ";", Bereiche mit ","; sortiert, überlappende zusammengefasst
+inline std::vector<std::pair<int, int>> ParseCuts(const std::wstring& s) {
+    std::vector<std::pair<int, int>> cut, merged;
+    for (size_t p = 0; p < s.size();) {
+        size_t e = s.find_first_of(L";,", p);
+        if (e == std::wstring::npos) e = s.size();
+        std::wstring part = s.substr(p, e - p);
+        wchar_t *a = nullptr, *b = nullptr;
+        long x = wcstol(part.c_str(), &a, 10);
+        if (a != part.c_str() && *a == L'-') {
+            long y = wcstol(a + 1, &b, 10);
+            if (b != a + 1 && x >= 0 && y > x) cut.push_back({(int)x, (int)y});
+        }
+        p = e + 1;
+    }
+    std::sort(cut.begin(), cut.end());
+    for (auto& r : cut) {
+        if (!merged.empty() && r.first <= merged.back().second) merged.back().second = std::max(merged.back().second, r.second);
+        else merged.push_back(r);
+    }
+    return merged;
+}
+
+// Zeile eines Songtexts mit neuem Zeitstempel [mm:ss.hh] versehen; vorhandene Zeitstempel davor fallen weg
+inline std::wstring StampLine(std::wstring line, double seconds) {
+    while (!line.empty() && line[0] == L'[') {
+        size_t e = line.find(L']');
+        if (e == std::wstring::npos || e < 2 || line[1] < L'0' || line[1] > L'9') break;  // [Refrain] bleibt
+        line.erase(0, e + 1);
+    }
+    int cs = seconds > 0 ? (int)(seconds * 100 + 0.5) : 0;
+    wchar_t t[24];
+    swprintf(t, 24, L"[%02d:%02d.%02d]", cs / 6000, cs / 100 % 60, cs % 100);
+    return t + line;
+}
 
 // CSV mit Anführungszeichen ("" = ein Anführungszeichen, Komma und Zeilenumbruch darin erlaubt); BOM wird übersprungen
 inline std::vector<std::vector<std::string>> ParseCsv(const std::string& s) {

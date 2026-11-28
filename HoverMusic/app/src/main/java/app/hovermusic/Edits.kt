@@ -267,7 +267,8 @@ fun EditDialog(vm: MusicViewModel, song: Song, onClose: () -> Unit) {
                     repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
                 }
                 TextButton(onClick = { confirmDelete = true }) { Text("Song löschen", color = Color(0xFFFF8080)) }
-                if (song.uri != null) {
+                // PC-Songs schneidet HoverBar, und das geht nur bei MP3
+                if (song.uri != null && (song.id.startsWith("yt:") || song.file.endsWith(".mp3", ignoreCase = true))) {
                     Button(onClick = { vm.pause(); cutting = true }, modifier = Modifier.fillMaxWidth()) { Text("Audio schneiden") }
                     if (cuts != song.cuts) Text("Schnitt wird mit „Speichern“ übernommen.", fontSize = 12.sp)
                     if (!song.id.startsWith("yt:")) Text("Am PC schneidet HoverBar die Datei beim nächsten Öffnen (dort rückgängig machbar).", fontSize = 12.sp)

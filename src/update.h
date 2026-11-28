@@ -4,7 +4,7 @@
 #include <windows.h>
 #include <string>
 
-#define HB_VERSION L"1.4.1"
+#define HB_VERSION L"1.5.0"
 #define HB_REPO "KarosuMinoyari/HoverBar"  // GitHub: Besitzer/Repository
 #define HB_GITHUB L"https://github.com/KarosuMinoyari/HoverBar"
 #define HB_COFFEE L""                      // "Buy me a coffee"-Seite; leer = kein Knopf

@@ -194,7 +194,7 @@ fun SuggestScreen(vm: MusicViewModel, onClose: () -> Unit) {
         )
         val hits = results
         if (hits != null) {  // eigene Suche statt der Vorschläge
-            SearchResults(hits, searching) { Downloader.download(ctx, "https://youtu.be/${it.id}", toast = true) }
+            SearchResults(vm, hits, searching) { Downloader.download(ctx, "https://youtu.be/${it.id}", toast = true) }
             return@Column
         }
         Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {

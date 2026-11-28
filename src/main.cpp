@@ -31,7 +31,9 @@
 #include "update.h"
 #include "qrcode.h"
 #include "popup.h"
+#include "lrcedit.h"
 #include "parse.h"
+#include "fileio.h"
 #include <wincrypt.h>
 #include <softpub.h>
 #include <wintrust.h>
@@ -234,7 +236,7 @@ enum class HT {
     // Musik
     MusicJob, MusicEmpty, MCard, MTile, MMore, MPlayAll, MRow, PlHead, PlUp, PlDown, PlDelete, PlDrop, PlSongRow,
     AllSongRow, AllSongAdd, AllSongEdit, MusicOpen, MProgress, EditCover, EditBtn, EditInfo, CoverPick, EditLabel, EditField,
-    MAlbum, VolIcon, MusicManage, MSize, MSort, GrabKeyBtn, MReload, TimerWheel, TimerShow, TimerBtn, CtlKeyBtn, ImportBtn, SuggestRow, SuggestAdd, SuggestInfo, SuggestReload, SuggestCovers, TodoRow, TodoDel, CalSync, TutorialOpen, TutCard, TutBtn, TutSetting, InfoLink, InfoText
+    MAlbum, VolIcon, MusicManage, MSize, MSort, GrabKeyBtn, MReload, TimerWheel, TimerShow, TimerBtn, CtlKeyBtn, ImportBtn, SuggestRow, SuggestAdd, SuggestInfo, SuggestReload, SuggestCovers, TodoRow, TodoDel, CalSync, TutorialOpen, TutCard, TutBtn, TutSetting, InfoLink, InfoText, LrcEdit, EqBtn, SuggestOpen
 };
 struct Hit {
     RECT rc;
@@ -552,8 +554,11 @@ struct State {
     std::wstring zoneText;
     bool mouseWasDown = false;
     bool suggestOn = false, suggestBusy = false, suggestDone = false;  // Erweiterung "Vorschläge"
+    bool eqOn = false;                            // Erweiterung "Equalizer"
+    int eqPreset = 0;
     std::vector<Suggestion> suggestions;
     int previewing = -1;
+    bool previewLoading = false;                  // Suchtreffer: Adresse der Tonspur wird noch geholt
     bool showSearch = false, searchBusy = false;  // die Vorschläge-Seite zeigt gerade Suchtreffer
     std::vector<Suggestion> found;
     bool kbdNav = false;                        // zuletzt mit Pfeiltasten navigiert (Enter aktiviert dann die Markierung)
@@ -689,6 +694,9 @@ static void InitIni() {
     g.spacing = std::max(80, std::min(160, (int)GetPrivateProfileIntW(L"Einstellungen", L"Zeilenabstand", 100, g.ini.c_str())));
     g.suggestOn = GetPrivateProfileIntW(L"Erweiterungen", L"Vorschlaege", 0, g.ini.c_str()) != 0;
     g.suggestCovers = GetPrivateProfileIntW(L"Erweiterungen", L"VorschlagCover", 1, g.ini.c_str()) != 0;
+    g.eqOn = GetPrivateProfileIntW(L"Erweiterungen", L"Equalizer", 0, g.ini.c_str()) != 0;
+    g.eqPreset = std::max(0, std::min(Eq_Count() - 1, (int)GetPrivateProfileIntW(L"Erweiterungen", L"EqVoreinstellung", 0, g.ini.c_str())));
+    Player_SetEq(g.eqOn, g.eqPreset);
     g.tutorialSeen = GetPrivateProfileIntW(L"Einstellungen", L"TutorialGesehen", 0, g.ini.c_str()) != 0;
     g.tutorialInSettings = GetPrivateProfileIntW(L"Einstellungen", L"TutorialReiter", 0, g.ini.c_str()) != 0;
     g.todoOn = GetPrivateProfileIntW(L"Erweiterungen", L"Todo", 0, g.ini.c_str()) != 0;
@@ -1305,15 +1313,10 @@ static void LoadTodos() {  // Zeilen "0|Text" / "1|Text", UTF-16
         if (l.size() > 2 && l[1] == L'|') g.todos.push_back({l[0] == L'1', l.substr(2)});
     }
 }
-static void SaveTodos() {  // erst daneben schreiben, dann ersetzen: nie eine halbe Liste
-    std::wstring all, tmp = TodoFile() + L".tmp";
+static void SaveTodos() {
+    std::wstring all;
     for (auto& t : g.todos) all += (t.first ? L"1|" : L"0|") + t.second + L"\n";
-    HANDLE h = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
-    if (h == INVALID_HANDLE_VALUE) return;
-    DWORD wr = 0;
-    bool ok = WriteFile(h, all.data(), (DWORD)(all.size() * sizeof(wchar_t)), &wr, nullptr) != FALSE;
-    CloseHandle(h);
-    if (ok) MoveFileExW(tmp.c_str(), TodoFile().c_str(), MOVEFILE_REPLACE_EXISTING);
+    WriteAtomic(TodoFile(), all.data(), all.size() * sizeof(wchar_t));
 }
 static void LoadEvents() {
     g.eventsLoaded = true;
@@ -1346,13 +1349,7 @@ static void SaveEvents() {
     int n = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), nullptr, 0, nullptr, nullptr);
     std::string u(n, '\0');
     WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), &u[0], n, nullptr, nullptr);
-    std::wstring tmp = EventsFile() + L".tmp";
-    HANDLE h = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
-    if (h == INVALID_HANDLE_VALUE) return;
-    DWORD wr;
-    WriteFile(h, u.data(), (DWORD)u.size(), &wr, nullptr);
-    CloseHandle(h);
-    MoveFileExW(tmp.c_str(), EventsFile().c_str(), MOVEFILE_REPLACE_EXISTING);
+    WriteAtomic(EventsFile(), u);
 }
 // Termine eines Tages, nach Uhrzeit sortiert (ganztägige zuerst); liefert Indizes in g.events
 static std::vector<int> EventsOn(int date) {
@@ -1727,11 +1724,11 @@ static void LayoutSuggested(int W, int pad, int y0) {
         if (g.suggestOn) g.hits.push_back({{pad + cw - S(16) - 2 * bw - S(10), by5, pad + cw - S(16) - bw - S(10), by5 + bh}, HT::PlugBtn, 15});
         y += ch5 + S(12);
     }
-    for (int card = 5; card <= 6; card++) {  // Kalender, To-do-Liste
+    for (int card = 5; card <= 7; card++) {  // Kalender, To-do-Liste, Equalizer
         int h6 = S(130);
         g.hits.push_back({{pad, y, pad + cw, y + h6}, HT::PlugCard, card});
-        int by6 = y + h6 - S(14) - bh, id = card == 5 ? 16 : 18;
-        bool on = card == 5 ? g.calendarOn : g.todoOn;
+        int by6 = y + h6 - S(14) - bh, id = card == 5 ? 16 : card == 6 ? 18 : 26;
+        bool on = card == 5 ? g.calendarOn : card == 6 ? g.todoOn : g.eqOn;
         g.hits.push_back({{pad + cw - S(16) - bw, by6, pad + cw - S(16), by6 + bh}, HT::PlugBtn, id});
         if (on) g.hits.push_back({{pad + cw - S(16) - 2 * bw - S(10), by6, pad + cw - S(16) - bw - S(10), by6 + bh}, HT::PlugBtn, id + 1});
         y += h6 + S(12);
@@ -2021,6 +2018,11 @@ static void LayoutNowPlaying(int W, int H, int pad) {
     int y = top + cs + S(100);  // Titel + Künstler, dann etwas Luft bis zum Fortschritt
     int tl = pad + S(24), tr = W - pad - S(24);
     if (g.pst.active) g.hits.push_back({{tl, y - S(8), tr, y + S(14)}, HT::MProgress, 0});
+    if (g.eqOn) {  // Equalizer: oben rechts über dem Fortschrittsbalken; der Titel macht ihm Platz
+        g.hits.push_back({{tr - S(40), y - S(40), tr, y - S(14)}, HT::EqBtn, 0});
+        sNpL += S(40);
+        sNpR -= S(40);
+    }
     y += S(44);  // unter Fortschritt + Zeiten
     int b = S(60), bs = S(44);
     g.hits.push_back({{cx - b / 2, y, cx + b / 2, y + b}, HT::MediaPlay, 0});
@@ -2035,6 +2037,8 @@ static void LayoutNowPlaying(int W, int H, int pad) {
         g.hits.push_back({{tr + S(4) - S(86), y + (b - S(40)) / 2, tr + S(4) - S(46), y + (b + S(40)) / 2}, HT::FavBtn, 0});
     y += b + S(16);
     if (H - S(18) - y > S(70)) g.hits.push_back({{pad, y, W - pad, H - S(18)}, HT::NpLyrics, 0});
+    if (g.pst.active && H - S(18) - y > S(70))  // Stift unten rechts: Songtext bearbeiten
+        g.hits.push_back({{W - pad - S(36), H - S(54), W - pad, H - S(18)}, HT::LrcEdit, 0});
     g.contentH = 0;
     if (g.npDrop > 0)  // beim Einklappen alles nach unten schieben
         for (size_t i = first; i < g.hits.size(); i++) OffsetRect(&g.hits[i].rc, 0, (int)g.npDrop);
@@ -2073,6 +2077,10 @@ static void LayoutMusic(int W, int pad, int y0) {
         g.jobsView = open;
     }
   // (Lautstärke sitzt jetzt unten in der Musikleiste)
+    if (g.suggestOn) {  // Erweiterung "Songvorschläge"
+        g.hits.push_back({{pad, y, pad + cw, y + S(44)}, HT::SuggestOpen, 0});
+        y += S(54);
+    }
     for (int j = 0; j < (int)g.jobsView.size(); j++) {
         g.hits.push_back({{pad, y, pad + cw, y + S(52)}, HT::MusicJob, j});
         y += S(58);
@@ -2530,11 +2538,10 @@ static void Layout() {
         g.contentH = y - y0;
     } else if (g.view == View::Suggest) {
         int cw = W - 2 * pad, y = y0, rh = RowH(58);
-        if (!g.showSearch) {  // oben im Kopf sitzt das Suchfeld, die Knöpfe direkt darunter
-            g.hits.push_back({{W - pad - S(116), y, W - pad, y + S(32)}, HT::SuggestReload, 0});
-            g.hits.push_back({{W - pad - S(238), y, W - pad - S(124), y + S(32)}, HT::SuggestCovers, 0});
-            y += S(42);
-        }
+        // oben im Kopf sitzt das Suchfeld, die Knöpfe direkt darunter
+        if (!g.showSearch) g.hits.push_back({{W - pad - S(116), y, W - pad, y + S(32)}, HT::SuggestReload, 0});
+        g.hits.push_back({{W - pad - S(238), y, W - pad - S(124), y + S(32)}, HT::SuggestCovers, 0});
+        y += S(42);
         if (SuggestBusy() || SuggestList().empty()) g.hits.push_back({{pad, y, pad + cw, y + S(60)}, HT::SuggestInfo, 0});
         else
             for (int i = 0; i < (int)SuggestList().size(); i++, y += rh + S(4)) {
@@ -2668,7 +2675,7 @@ static void Layout() {
     }
     // Kopfzeile (liegt über allem)
     // links: Logo, Titel, direkt daneben das Zahnrad (Unterseiten: Zurück statt Logo, kein Zahnrad)
-    if ((g.view == View::Folder || g.view == View::Settings || MusicView() || g.view == View::AllApps || g.view == View::NowPlaying) &&
+    if ((g.view == View::Folder || g.view == View::Settings || MusicView() || g.view == View::AllApps || g.view == View::NowPlaying || g.view == View::Suggest) &&
         !(!g.appsOn && g.view == View::Music)) {
         g.hits.push_back({{pad - S(6), S(14), pad + S(30), S(50)}, HT::Back, 0});
     } else {
@@ -2733,7 +2740,6 @@ static std::vector<int> NavPages() {
     if (g.musicOn) p.push_back(1);
     if (g.calendarOn) p.push_back(2);
     if (g.timerOn) p.push_back(5);  // Timer (Erweiterung)
-    if (g.suggestOn && g.musicOn) p.push_back(6);  // Vorschläge (Erweiterung)
     if (g.todoOn) p.push_back(7);                  // To-do-Liste (Erweiterung)
     if (g.claudeOn) p.push_back(4);  // Claude-Chat (Erweiterung)
     if (g.appsOn && !WizTree_Exe().empty()) p.push_back(3);
@@ -2746,7 +2752,7 @@ static int NavPage() {
     if (g.view == View::Chat) return 4;
     if (g.view == View::Timer) return 5;
     if (g.view == View::Todo) return 7;
-    if (g.view == View::Suggest) return g.showSearch ? 1 : 6;
+    if (g.view == View::Suggest) return 1;  // gehört zur Musikseite
     if (g.view == View::Calendar) return 2;
     if (g.view == View::Music || g.view == View::MusicList || g.view == View::SongEdit || g.view == View::MusicSettings || g.view == View::NowPlaying) return 1;
     return 0;
@@ -2755,7 +2761,7 @@ static bool IsHeaderHit(HT t) { return t == HT::Back || t == HT::NavBar || t == 
                                        t == HT::Logo || t == HT::Wifi || t == HT::Battery || t == HT::BarVol || t == HT::VolIcon || t == HT::TitleBtn || t == HT::SortBtn || t == HT::CalNav || t == HT::StorageRefresh || t == HT::ChatNew ||
                                      t == HT::MediaPrev || t == HT::MediaPlay || t == HT::MediaNext || t == HT::MediaPhone ||
                                      t == HT::MusicOpen || t == HT::PlayMode || t == HT::MProgress || t == HT::MusicManage || t == HT::MSize ||
-                                     t == HT::NpCover || t == HT::NpLyrics || t == HT::BarCover || t == HT::LibTab || t == HT::FavBtn || t == HT::TutorialOpen; }
+                                     t == HT::NpCover || t == HT::NpLyrics || t == HT::LrcEdit || t == HT::EqBtn || t == HT::BarCover || t == HT::LibTab || t == HT::FavBtn || t == HT::TutorialOpen; }
 static int ContentBottom() { return !HasMusicBar() ? g.h : g.h - S(18) - S(kBarH) - S(8); }
 static bool OrdnerPage() { return (g.view == View::Settings && g.setTab == 1) || g.view == View::MusicSettings; }  // zweigeteilte Seiten (Ordner, Musik)
 
@@ -3405,15 +3411,15 @@ static void DrawHit(HDC dc, const Hit& h, bool hot, int cardHot) {
             break;
         }
         FillRound(dc, h.rc, S(12), hot ? cHover : cCard);
-        Text(dc, g.showSearch ? L"\uEC4F" : g.previewing == h.idx ? L"\uE769" : L"\uE768", {h.rc.left + S(6), h.rc.top, h.rc.left + S(42), h.rc.bottom}, g.fGlyph, cText, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        Text(dc, g.previewing == h.idx ? L"\uE769" : L"\uE768", {h.rc.left + S(6), h.rc.top, h.rc.left + S(42), h.rc.bottom}, g.fGlyph, cText, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         int mid = (h.rc.top + h.rc.bottom) / 2, tx = h.rc.left + S(48);
-        if (g.suggestCovers && !g.showSearch && !s.cover.empty()) {
+        if (g.suggestCovers && !s.cover.empty()) {
             int px = h.rc.bottom - h.rc.top - S(14);
             DrawCover(dc, s.cover, tx, h.rc.top + S(7), px);
             tx += px + S(10);
         }
         Text(dc, s.title, {tx, h.rc.top + S(4), h.rc.right - S(58), mid + S(2)}, g.fHead, cText, DT_LEFT | DT_BOTTOM | DT_SINGLELINE | DT_END_ELLIPSIS);
-        std::wstring sub = s.artist;
+        std::wstring sub = g.previewLoading && g.previewing == h.idx ? std::wstring(L"Hörprobe lädt …") : s.artist;
         int percent = -1;  // laufender Download zu diesem Treffer
         if (s.added)
             for (const DownloadJob& j : Music_Jobs()) {
@@ -3701,10 +3707,10 @@ static void DrawHit(HDC dc, const Hit& h, bool hot, int cardHot) {
         break;
     case HT::PlugCard: {  // Erweiterung: Beschreibung, Lizenz, Stand
         {
-            static const wchar_t* names[] = {L"WizTree – Speicherbelegung", L"Claude – KI-Chat", L"Musik-Sync – Musik aufs Handy", L"Timer", L"Songvorschläge", L"Kalender", L"To-do-Liste"};
+            static const wchar_t* names[] = {L"WizTree – Speicherbelegung", L"Claude – KI-Chat", L"Musik-Sync – Musik aufs Handy", L"Timer", L"Songvorschläge", L"Kalender", L"To-do-Liste", L"Equalizer"};
             static const wchar_t* icons[] = {L"", L"", L"", L"", L"", L"", L""};
             static const COLORREF colors[] = {RGB(90, 140, 90), RGB(0, 0, 0), RGB(66, 120, 214), RGB(224, 138, 60), RGB(150, 100, 220), RGB(220, 80, 90), RGB(60, 170, 120)};
-            if (h.idx >= 0 && h.idx <= 6) {
+            if (h.idx >= 0 && h.idx <= 7) {
                 bool open = (g.plugOpen & (1u << h.idx)) != 0;
                 RECT chev = {h.rc.right - S(48), h.rc.top, h.rc.right - S(14), h.rc.top + S(72)};
                 if (!open) {
@@ -3740,6 +3746,19 @@ static void DrawHit(HDC dc, const Hit& h, bool hot, int cardHot) {
                  {h.rc.left + S(18), h.rc.top + S(96), h.rc.right - S(18), h.rc.top + S(116)}, g.fSmall, cDim, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
             Text(dc, g.claudeOn ? L"Hinzugefügt" : L"Nicht hinzugefügt", {h.rc.left + S(18), h.rc.bottom - S(50), h.rc.right - S(340), h.rc.bottom - S(14)}, g.fSmall,
                  g.claudeOn ? RGB(110, 210, 140) : cDim, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            break;
+        }
+        if (h.idx == 7) {  // Equalizer
+            FillRound(dc, h.rc, S(18), cCard);
+            RECT ic = {h.rc.left + S(18), h.rc.top + S(18), h.rc.left + S(18) + S(44), h.rc.top + S(18) + S(44)};
+            FillRound(dc, ic, S(12), RGB(40, 150, 170));
+            Text(dc, L"\uE9E9", ic, g.fGlyphL, RGB(255, 255, 255), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            int tx = ic.right + S(14);
+            Text(dc, L"Equalizer", {tx, h.rc.top + S(16), h.rc.right - S(18), h.rc.top + S(40)}, g.fHead, cText, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            Text(dc, L"Voreinstellungen; Knopf „EQ“ bei „Läuft gerade“.", {tx, h.rc.top + S(40), h.rc.right - S(18), h.rc.top + S(60)}, g.fSmall, cDim,
+                 DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+            Text(dc, g.eqOn ? L"Hinzugefügt" : L"Nicht hinzugefügt", {h.rc.left + S(18), h.rc.bottom - S(50), h.rc.right - S(340), h.rc.bottom - S(14)}, g.fSmall,
+                 g.eqOn ? RGB(110, 210, 140) : cDim, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
             break;
         }
         if (h.idx == 5 || h.idx == 6) {  // Kalender, To-do-Liste
@@ -3853,6 +3872,11 @@ static void DrawHit(HDC dc, const Hit& h, bool hot, int cardHot) {
                 Text(dc, ss.state == 1 ? L"Bitte warten …" : g.syncOn ? L"Jetzt abgleichen" : L"Einrichten …", h.rc, g.fHead, RGB(255, 255, 255),
                      DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             }
+            break;
+        }
+        if (h.idx == 26 || h.idx == 27) {  // Equalizer
+            FillRound(dc, h.rc, S(10), h.idx == 27 ? (hot ? RGB(200, 60, 60) : cSearch) : hot ? RGB(120, 180, 255) : cAccent);
+            Text(dc, h.idx == 27 ? L"Entfernen" : g.eqOn ? L"Klang wählen" : L"Hinzufügen", h.rc, g.fHead, RGB(255, 255, 255), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             break;
         }
         if (h.idx >= 16 && h.idx <= 19) {  // Kalender, To-do-Liste
@@ -4434,6 +4458,20 @@ static void DrawHit(HDC dc, const Hit& h, bool hot, int cardHot) {
         Text(dc, g.pst.dur > 0 ? FmtTime(g.pst.dur) : std::wstring(L"–"), tr, g.fSmall, cDim, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
         break;
     }
+    case HT::EqBtn:
+        FillRound(dc, h.rc, S(13), g.eqPreset ? cAccent : hot ? cCardHot : cCard);
+        Text(dc, L"EQ", h.rc, g.fSmall, cText, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        break;
+    case HT::SuggestOpen:
+        FillRound(dc, h.rc, S(14), hot ? cCardHot : cCard);
+        Text(dc, L"\uE734", {h.rc.left + S(8), h.rc.top, h.rc.left + S(44), h.rc.bottom}, g.fGlyph, RGB(180, 140, 255), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        Text(dc, L"Songvorschläge", {h.rc.left + S(50), h.rc.top, h.rc.right - S(40), h.rc.bottom}, g.fHead, cText, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        Text(dc, L"›", {h.rc.right - S(36), h.rc.top, h.rc.right - S(10), h.rc.bottom}, g.fTitle, cDim, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        break;
+    case HT::LrcEdit:
+        FillRound(dc, h.rc, S(18), hot ? cCardHot : cCard);
+        Text(dc, L"\uE70F", h.rc, g.fGlyph, cText, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        break;
     case HT::NpLyrics: {
         g.lyrRects.clear();
         if (!g.pst.active) break;
@@ -6115,6 +6153,7 @@ static void GoToPage(int p) {
     else if (p == 5) ShowView(View::Timer, -1);
     else if (p == 7) ShowView(View::Todo, -1);
     else if (p == 6) {
+        if (g.showSearch) { Music_PlayPreview(L""); g.previewing = -1; }  // die Nummer gehörte zu den Suchtreffern
         g.showSearch = false;
         if (!g.suggestDone) StartSuggest();
         ShowView(View::Suggest, -1);
@@ -6495,6 +6534,16 @@ static void CalendarSyncClick() {
     g.icalUrl = link;
     IniSet(L"Erweiterungen", L"KalenderICal", link.c_str());
     StartIcal();
+    Refresh();
+}
+static void EqMenu() {
+    HMENU m = CreatePopupMenu();
+    for (int i = 0; i < Eq_Count(); i++) AppendMenuW(m, MF_STRING | (i == g.eqPreset ? MF_CHECKED : 0), i + 1, Eq_Name(i));
+    int cmd = TrackMenu(m);
+    if (!cmd) return;
+    g.eqPreset = cmd - 1;
+    IniSet(L"Erweiterungen", L"EqVoreinstellung", std::to_wstring(g.eqPreset).c_str());
+    Player_SetEq(g.eqOn, g.eqPreset);
     Refresh();
 }
 // Update gefunden: einmal je Version anbieten, mit den Neuerungen; true, wenn gerade ein Fenster gezeigt wurde
@@ -8026,15 +8075,20 @@ static void Activate(int hitIdx, bool right) {
         StartSuggest();
         Refresh();
         break;
-    case HT::SuggestRow:  // Hörprobe an/aus; ein Suchtreffer wird geladen
-        if (g.showSearch) { AddFound(h.idx); Render(); break; }
-        if (h.idx < (int)g.suggestions.size()) {
+    case HT::SuggestRow:  // Hörprobe an/aus (geladen wird über den Knopf rechts)
+        if (h.idx < (int)SuggestList().size()) {
             g.previewing = g.previewing == h.idx ? -1 : h.idx;
+            g.previewLoading = false;
             if (g.previewing >= 0) {
                 PlayerState ps = Player_State();
                 if (ps.active && ps.playing) Player_Toggle();
             }
-            Music_PlayPreview(g.previewing >= 0 ? g.suggestions[g.previewing].preview : L"");
+            std::wstring url = g.previewing >= 0 ? SuggestList()[g.previewing].preview : L"";
+            Music_PlayPreview(url);
+            if (g.previewing >= 0 && url.empty()) {  // Suchtreffer: die Tonspur erst bei YouTube erfragen
+                g.previewLoading = true;
+                Music_FindPreview(g.found[g.previewing].url);
+            }
             Render();
         }
         break;
@@ -8092,6 +8146,27 @@ static void Activate(int hitIdx, bool right) {
     case HT::NpCover:   // großes Cover: zurück
         LeaveNowPlaying();
         break;
+    case HT::EqBtn:
+        EqMenu();
+        break;
+    case HT::SuggestOpen:
+        GoToPage(6);
+        break;
+    case HT::LrcEdit: {
+        std::wstring id = g.pst.songId;
+        int i = Music_Find(id);
+        if (i < 0) break;
+        std::wstring title = Music_Songs()[i].title, text = Music_ReadLyrics(id);
+        if (text.empty() && g.lyrId == id)  // noch keine Datei: mit dem angezeigten Text anfangen
+            for (auto& l : g.lyr) text += l.text + L"\n";
+        g.menuOpen = true;  // die Leiste bleibt offen, solange der Editor da ist
+        bool saved = lrced::Run(g.hwnd, id, title, text);
+        g.menuOpen = false;
+        SetForegroundWindow(g.hwnd);
+        if (saved) g.lyrId.clear();  // neu einlesen
+        Refresh();
+        break;
+    }
     case HT::NpLyrics:  // Zeile anklicken -> dorthin spulen
         for (auto& lr : g.lyrRects)
             if (PtInRect(&lr.first, g.mousePt) && g.pst.dur > 0) {
@@ -8466,6 +8541,14 @@ static void Activate(int hitIdx, bool right) {
             Refresh();
             break;
         }
+        if (h.idx == 26 || h.idx == 27) {  // Equalizer hinzufügen / Klang wählen / entfernen
+            if (h.idx == 26 && g.eqOn) { EqMenu(); break; }
+            g.eqOn = h.idx == 26;
+            IniSet(L"Erweiterungen", L"Equalizer", g.eqOn ? L"1" : L"0");
+            Player_SetEq(g.eqOn, g.eqPreset);
+            Refresh();
+            break;
+        }
         if (h.idx == 14 || h.idx == 15) {  // Vorschläge hinzufügen / öffnen / entfernen
             if (h.idx == 14 && g.suggestOn) {
                 if (g.musicOn) GoToPage(6);
@@ -8653,7 +8736,7 @@ static void Activate(int hitIdx, bool right) {
     case HT::Back:
         if (g.view == View::SongEdit) { LeaveSongEdit(); break; }
         if (g.view == View::NowPlaying) { LeaveNowPlaying(); break; }
-        if (g.view == View::MusicList || g.view == View::MusicSettings) { g.query.clear(); g.creatingFolder = false; g.namingFor = -1; ShowView(View::Music); break; }
+        if (g.view == View::MusicList || g.view == View::MusicSettings || g.view == View::Suggest) { g.query.clear(); g.creatingFolder = false; g.namingFor = -1; ShowView(View::Music); break; }
         g.query.clear();
         g.creatingFolder = false;
         g.namingFor = -1;
@@ -8933,7 +9016,7 @@ static void OnKeyDown(WPARAM vk) {
         else if (!g.query.empty()) { g.query.clear(); OnQueryChanged(); }
         else if (g.view == View::MusicList || g.view == View::MusicSettings) ShowView(View::Music);
         else if (g.view == View::Folder || g.view == View::Settings || g.view == View::Music || g.view == View::AllApps || g.view == View::Calendar || g.view == View::Storage || g.view == View::Chat || g.view == View::Timer || g.view == View::Suggest || g.view == View::Todo || g.view == View::Tutorial) {
-            if (g.view == View::Suggest && g.showSearch) { ShowView(View::Music); return; }
+            if (g.view == View::Suggest) { ShowView(View::Music); return; }
             if (!g.appsOn && g.view == View::Music) CloseBar(L"Esc");
             else ShowView(View::Folders);
         }
@@ -9140,7 +9223,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 RefreshStatus();
                 if (n != g.net || nb != g.netBars || b != g.batt || c != g.battCharging || inet != g.netInternet) Refresh();
             }
-            if (g.previewing >= 0 && !Music_PreviewActive()) {  // von einem eigenen Song abgelöst
+            if (g.previewing >= 0 && !g.previewLoading && !Music_PreviewActive()) {  // von einem eigenen Song abgelöst
                 g.previewing = -1;
                 if (g.open && !g.closing) Render();
             }
@@ -9549,8 +9632,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (g.ctlKey[3] == VK_OEM_PLUS) RegisterHotKey(hwnd, 7, 0, VK_ADD);         // Ziffernblock zusätzlich
             if (g.ctlKey[4] == VK_OEM_MINUS) RegisterHotKey(hwnd, 9, 0, VK_SUBTRACT);
         }
-        // Vollbild-Spiel, oder man tippt gerade im Claude-Chat: Ende-Taste normal weiterreichen
-        if ((!g.open && FullscreenActive()) || (g.open && Chat_IsOwnWindow(GetForegroundWindow()))) {
+        // Vollbild-Spiel, oder man tippt gerade im Claude-Chat oder Songtext-Editor: Ende-Taste normal weiterreichen
+        if ((!g.open && FullscreenActive()) || (g.open && (Chat_IsOwnWindow(GetForegroundWindow()) || lrced::IsEditor(GetForegroundWindow())))) {
             // Spiel/Video im Vollbild: Taste nicht schlucken, sondern ans Spiel weiterreichen (Loslassen kommt dort von selbst an)
             sHoldPassed = true;
             UnregisterHotKey(hwnd, 1);
@@ -9577,7 +9660,24 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             g.found = *r;
             delete r;
             g.searchBusy = false;
+            g.previewing = -1;
             if (g.open && !g.closing && g.view == View::Suggest) Refresh();
+        } else if (wp == MUSIC_PREVIEW) {
+            auto* r = (std::pair<std::wstring, std::wstring>*)lp;
+            // nur, wenn noch genau dieser Treffer gewartet wird und inzwischen kein eigener Song läuft
+            if (g.showSearch && g.previewLoading && g.previewing >= 0 && g.previewing < (int)g.found.size() && g.found[g.previewing].url == r->first) {
+                g.previewLoading = false;
+                PlayerState ps = Player_State();
+                if (r->second.empty() || (ps.active && ps.playing)) {
+                    if (r->second.empty()) MessageBeep(MB_ICONHAND);
+                    g.previewing = -1;
+                } else {
+                    g.found[g.previewing].preview = r->second;
+                    Music_PlayPreview(r->second);
+                }
+                if (g.open && !g.closing && g.view == View::Suggest) Render();
+            }
+            delete r;
         } else if (wp == MUSIC_SUGGEST) {
             auto* r = (std::vector<Suggestion>*)lp;
             g.suggestions = *r;
@@ -9588,13 +9688,21 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         } else if (wp == MUSIC_SONG) {
             auto* s = (Song*)lp;
             int i = Music_Find(s->id);
-            if (i >= 0) { s->plays = Music_Songs()[i].plays; Music_Songs()[i] = *s; }
+            std::wstring broken;  // Reparatur: die unlesbare Datei, die ersetzt wird
+            if (s->repair) {
+                if (i >= 0) {  // nur die Datei tauschen; Titel, Cover, Wiedergaben und Playlists bleiben
+                    broken = Music_Songs()[i].file;
+                    Music_Songs()[i].file = s->file;
+                } else DeleteFileW(s->file.c_str());  // inzwischen entfernt
+            } else if (i >= 0) { s->plays = Music_Songs()[i].plays; Music_Songs()[i] = *s; }
             else Music_Songs().push_back(*s);
             if (!s->playlist.empty()) {  // Import: in die Playlist, Zweifelsfälle zusätzlich zum Nachhören
                 Music_AddToPlaylist(s->playlist, s->id);
             }
             delete s;
             Music_Save();
+            // shortcut: hält der Player die Datei noch offen, bleibt sie liegen und taucht beim nächsten Import als zweiter Eintrag auf
+            if (!broken.empty()) DeleteFileW(broken.c_str());
             BuildMusic();
             if (g.open && !g.closing) Refresh();
         } else if (wp == MUSIC_SYNC) {  // Musik-Sync: Songs sind verschoben -> neue Pfade übernehmen, Bibliotheksdatei schreiben

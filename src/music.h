@@ -9,7 +9,7 @@
 
 enum { WM_APP_MUSIC = WM_APP + 40 };
 // wParam: MUSIC_SONG (lParam = Song*, Empfänger löscht), MUSIC_JOBS (Fortschritt), MUSIC_COVERS (lParam = CoverResults*)
-enum { MUSIC_SONG = 1, MUSIC_JOBS = 2, MUSIC_COVERS = 3, MUSIC_WAVE = 4, MUSIC_TOOL = 5, MUSIC_LYRICS = 6, MUSIC_SYNC = 7, MUSIC_PLAYED = 8, MUSIC_SUGGEST = 9, MUSIC_FOUND = 10 };  // FOUND: Suchtreffer (std::vector<Suggestion>*)  // PLAYED: lParam = std::wstring* (Song-ID), Empfänger löscht
+enum { MUSIC_SONG = 1, MUSIC_JOBS = 2, MUSIC_COVERS = 3, MUSIC_WAVE = 4, MUSIC_TOOL = 5, MUSIC_LYRICS = 6, MUSIC_SYNC = 7, MUSIC_PLAYED = 8, MUSIC_SUGGEST = 9, MUSIC_FOUND = 10, MUSIC_PREVIEW = 11 };  // FOUND: Suchtreffer (std::vector<Suggestion>*)  // PLAYED: lParam = std::wstring* (Song-ID), Empfänger löscht
 
 // ---- Musik-Sync (Erweiterung): Songs in einem Cloud-Ordner, dazu HoverBar-Bibliothek.json mit Playlists, Favoriten und Covern (Cover\ daneben).
 // Die Datei ist das Austauschformat für andere Geräte (z. B. eine Handy-App): Dateinamen sind relativ zum Ordner.
@@ -44,6 +44,8 @@ struct LyricsResult {  // MUSIC_LYRICS (lParam = LyricsResult*, Empfänger lösc
     bool synced = false;  // Zeilen haben Zeitstempel
 };
 void Music_LoadLyrics(const std::wstring& id, bool online);
+std::wstring Music_ReadLyrics(const std::wstring& id);                          // Inhalt der .lrc, leer = keine
+bool Music_SaveLyrics(const std::wstring& id, const std::wstring& text);        // leerer Text löscht die .lrc
 
 // yt-dlp herunterladen/aktualisieren (Status für die Einstellungen)
 enum { TOOL_IDLE = 0, TOOL_CHECKING, TOOL_DOWNLOADING, TOOL_VERIFYING, TOOL_DONE, TOOL_ERROR };
@@ -67,6 +69,7 @@ struct Song {
     int duration = 0;  // Sekunden
     int plays = 0;     // wie oft abgespielt
     std::wstring playlist;  // nur beim Import: in diese Playlist legen (wird nicht gespeichert)
+    bool repair = false;    // nur beim Neu-Laden eines unlesbaren Songs: die Datei ersetzen
 };
 
 struct Playlist {
@@ -80,6 +83,7 @@ struct DownloadJob {
     int stage = 0;  // 0 wartet, 1 lädt, 2 wandelt um, 3 Cover, 4 fertig, -1 Fehler
     std::wstring error;
     std::wstring artist, name, playlist;  // beim Import / bei Vorschlägen: bekannte Angaben
+    std::wstring repairId, repairFile;    // Neu-Laden eines unlesbaren Handy-Songs: dessen ID und bisherige Datei
     int seconds = 0;
 };
 
@@ -113,6 +117,8 @@ void Music_Suggest();
 bool Music_PreviewActive();                               // läuft gerade eine Hörprobe?
 std::string Net_Get(const std::wstring& url);             // einfacher HTTPS-Abruf (blockiert)
 void Music_Search(const std::wstring& query);             // YouTube durchsuchen (braucht yt-dlp)
+// Adresse der Tonspur eines Suchtreffers holen; Ergebnis als MUSIC_PREVIEW (std::pair<Video, Tonspur>*, leer = ging nicht)
+void Music_FindPreview(const std::wstring& video);
 void Music_AddToPlaylist(const std::wstring& name, const std::wstring& id);  // Playlist anlegen, falls es sie nicht gibt
 void Music_PlayPreview(const std::wstring& url);           // 30-s-Hörprobe; leer = stoppen
 
@@ -142,6 +148,10 @@ void Player_Stop();
 void Player_SetVolume(double v);  // 0..1
 void Player_SetModes(bool shuffle, int repeat);  // Zufall; Wiederholen: 0 aus, 1 Song, 2 Playlist
 void Player_SetDuck(double f);    // zusätzlicher Faktor, solange andere Medien laufen
+// Equalizer (Erweiterung): Voreinstellung 0 = Flat; wirkt sofort auf den laufenden Song
+void Player_SetEq(bool on, int preset);
+int Eq_Count();
+const wchar_t* Eq_Name(int preset);
 bool Music_OtherMediaPlaying();   // Browser/Video-Player gibt gerade Ton aus
 void Net_Status(int& kind, int& bars, bool& internet, std::wstring& name);  // für die Kopfzeile
 PlayerState Player_State();
